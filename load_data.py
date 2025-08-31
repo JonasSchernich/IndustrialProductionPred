@@ -1,18 +1,21 @@
 # load_data.py
 import pandas as pd, re, glob, pathlib, numpy as np
 
-BASE_DIR   = pathlib.Path(__file__).parent
-BASE_DIR   = BASE_DIR / "data"
-DATA_DIR   = BASE_DIR / "raw_feature_data"
-TARGET_DIR = BASE_DIR / "raw_target_data"
-PROCESSED_DIR   = BASE_DIR / "loaded_data"
+BASE_DIR = pathlib.Path(__file__).parents[1] / "Code"
+DATA_DIR = BASE_DIR / "data" / "raw" / "features"
+TARGET_DIR = BASE_DIR / "data" / "raw" / "target"
+PROCESSED_DIR = BASE_DIR / "data" / "processed"
+
 OUT_CSV_PANEL_LONG        = PROCESSED_DIR / "ifo_panel.csv"
 OUT_CSV_PANEL_LONG_WITH_IP= PROCESSED_DIR / "panel_with_ip.csv"
-OUT_PARQUET_X             = PROCESSED_DIR / "X.parquet"
-OUT_CSV_Y                 = PROCESSED_DIR / "y.csv"
+OUT_TARGET_CSV            = PROCESSED_DIR / "target.csv"
 
 PAT = re.compile(r'^(?P<indicator>.+?)\s*\((?P<info>[A-Z])\)\s*(?P<branch>.+?)(?:\s+BD\s+SBR)?$')
 DOT_DDMMYY = re.compile(r'^\s*\d{2}\.\d{2}\.(\d{2}|\d{4})\s*$')
+
+# --------------------------------------------------
+# Hilfsfunktionen
+# --------------------------------------------------
 
 def parse_title(s):
     if not isinstance(s, str):
@@ -37,31 +40,26 @@ def parse_month(x):
     if pd.isna(x):
         return pd.NaT
     if isinstance(x, (int, float)) and not np.isnan(x):
-        # Excel-Seriennummern
         dt = pd.to_datetime(x, unit='d', origin='1899-12-30', errors='coerce')
         return _to_month_start(dt)
     s = str(x).strip()
-
-    # dd.mm.yy / dd.mm.yyyy → dayfirst
     if DOT_DDMMYY.fullmatch(s):
         dt = pd.to_datetime(s, dayfirst=True, errors='coerce')
         return _to_month_start(dt)
-
-    # Normalisierungen
-    s2 = s.replace('.', '/').replace('-', '/')
-
-    # mm/YYYY
-    if re.fullmatch(r'\d{2}/\d{4}', s2):
-        dt = pd.to_datetime(s2, format='%m/%Y', errors='coerce')
+    if re.fullmatch(r"\d{2}[./]\d{4}", s):
+        dt = pd.to_datetime(s.replace(".", "/"), format="%m/%Y", errors="coerce")
         return _to_month_start(dt)
-    # YYYY/mm
-    if re.fullmatch(r'\d{4}/\d{2}', s2):
-        y, m = s2.split('/')
+    if re.fullmatch(r"\d{4}[./]\d{2}", s):
+        y, m = re.split(r"[./]", s)
         return pd.Timestamp(int(y), int(m), 1)
-
-    # Fallback
-    dt = pd.to_datetime(s2, errors='coerce', dayfirst=True)
+    if re.fullmatch(r"\d{4}", s):
+        return pd.Timestamp(int(s), 1, 1)
+    dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
     return _to_month_start(dt) if pd.notna(dt) else pd.NaT
+
+# --------------------------------------------------
+# Features laden
+# --------------------------------------------------
 
 def load_file(path: pathlib.Path) -> pd.DataFrame:
     df = pd.read_excel(path, skiprows=2, engine="openpyxl")
@@ -92,81 +90,57 @@ def load_all_features_long() -> pd.DataFrame:
     panel = panel.sort_values(["date","branch","indicator"]).reset_index(drop=True)
     return panel
 
+# --------------------------------------------------
+# Target laden
+# --------------------------------------------------
+
 def load_ip_target(xlsx_path: pathlib.Path) -> pd.DataFrame:
     df = pd.read_excel(xlsx_path, sheet_name="IP", engine="openpyxl")
-    date_col = df.columns[0]
-    # Spalte 'IP' robust finden
-    ip_col = next((c for c in df.columns if str(c).strip().lower() == "ip"), df.columns[1])
-    df = df[[date_col, ip_col]].rename(columns={date_col: "date", ip_col: "IP"})
-    df["date"] = df["date"].map(parse_month)
-    df["IP"] = pd.to_numeric(df["IP"], errors="coerce")
-    df = df.dropna(subset=["date"]).drop_duplicates("date").sort_values("date").reset_index(drop=True)
-    return df
+    df = df.rename(columns={
+        df.columns[0]: "date",
+        "IP": "IP",
+        "MoM": "IP_change",
+        "YoY": "IP_yoy"
+    })
+    df["date"] = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
+    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    return df[["date", "IP", "IP_change", "IP_yoy"]]
 
-def make_series_name(row: pd.Series) -> str:
-    # stabile, eindeutige Spaltennamen für die breite Matrix
-    parts = [
-        (row.get("indicator") or "").strip(),
-        (row.get("branch") or "").strip(),
-        (row.get("additional_info") or ""),
-    ]
-    name = "|".join(parts)
-    name = re.sub(r"[^0-9A-Za-z|]+", "_", name).strip("_")
-    name = name.replace("||", "|").strip("|")
-    return name or "unknown"
-
-def features_long_to_wide(panel_long: pd.DataFrame) -> pd.DataFrame:
-    s = panel_long.apply(make_series_name, axis=1)
-    tmp = panel_long.assign(series=s)
-    wide = tmp.pivot_table(index="date", columns="series", values="value", aggfunc="last")
-    wide = wide.sort_index()
-    # Speicher schonen
-    wide = wide.astype("float32")
-    # Spaltennamen säubern
-    safe_cols = [re.sub(r"[^0-9A-Za-z_]+", "_", c).strip("_") for c in wide.columns]
-    wide.columns = safe_cols
-    return wide
+# --------------------------------------------------
+# Panel mit Target mergen
+# --------------------------------------------------
 
 def add_ip_to_long(panel_long: pd.DataFrame, ip_df: pd.DataFrame) -> pd.DataFrame:
-    ip_long = ip_df.assign(
+    ip_long = ip_df[["date", "IP_change"]].assign(
         branch="Total",
-        indicator="IP",
+        indicator="IP_change",
         additional_info=None,
-        value=lambda d: d["IP"],
-        title_raw="IP",
+        value=lambda d: d["IP_change"],
+        title_raw="IP_change",
         file="IndustrialProd.xlsx"
     )[["date","branch","indicator","additional_info","value","title_raw","file"]]
+
     out = pd.concat([panel_long, ip_long], ignore_index=True)
     out = out.sort_values(["date","branch","indicator"]).reset_index(drop=True)
     return out
 
-def build_X_y(panel_long: pd.DataFrame, ip_df: pd.DataFrame):
-    X = features_long_to_wide(panel_long)
-    y = ip_df.set_index("date").sort_index()["IP"].astype("float32")
-    # nur Monate mit IP behalten
-    data = X.join(y, how="inner")
-    y = data.pop("IP")
-    X = data
-    return X, y
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
 
 if __name__ == "__main__":
     # 1) Features (long)
     panel_long = load_all_features_long()
     panel_long.to_csv(OUT_CSV_PANEL_LONG, index=False, encoding="utf-8-sig")
-    print(f"panel long: {len(panel_long):,} zeilen")
+    print(f"ifo_panel.csv mit {len(panel_long):,} Zeilen gespeichert")
 
-    # 2) Target IP
+    # 2) Target laden
     ip_path = TARGET_DIR / "IndustrialProd.xlsx"
     ip_df = load_ip_target(ip_path)
-    print(f"ip: {len(ip_df):,} monate")
+    ip_df.to_csv(OUT_TARGET_CSV, index=False, encoding="utf-8-sig")
+    print(f"target.csv mit {len(ip_df):,} Monaten gespeichert")
 
-    # 3) Optional: IP ans long-Panel für EDA
+    # 3) Panel inkl. IP_change
     panel_with_ip = add_ip_to_long(panel_long, ip_df)
     panel_with_ip.to_csv(OUT_CSV_PANEL_LONG_WITH_IP, index=False, encoding="utf-8-sig")
-    print("panel+ip: ok")
-
-    # 4) Modell-Matrix
-    X, y = build_X_y(panel_long, ip_df)
-    X.to_parquet(OUT_PARQUET_X, index=True)
-    y.to_csv(OUT_CSV_Y, index=True, encoding="utf-8-sig")
-    print(f"X: {X.shape}, y: {y.shape}")
+    print(f"panel_with_ip.csv mit {len(panel_with_ip):,} Zeilen gespeichert")
