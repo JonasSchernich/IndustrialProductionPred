@@ -1,4 +1,3 @@
-# src/tuning/tuner.py
 from __future__ import annotations
 from typing import Dict, Any, Optional, Tuple, List
 import numpy as np
@@ -16,7 +15,8 @@ from .search_spaces import (
 )
 
 def _dropna_align(X: pd.DataFrame, y: pd.Series) -> tuple[pd.DataFrame, pd.Series]:
-    mask = ~np.any(pd.isna(X.values), axis=1)
+    # Nach Lags verwerfen wir Trainingszeilen, die IRGENDEIN NaN enthalten
+    mask = ~X.isna().any(axis=1)
     if mask.sum() == 0:
         return X.iloc[:0], y.iloc[:0]
     return X.loc[mask], y.loc[mask]
@@ -49,14 +49,13 @@ def tune_model(
     X = X.copy()
     y = _as_series(y).copy()
 
-    # --- NEW: folds einmal vorab erstellen & prüfen
     folds = list(splitter.split(X))
     if len(folds) == 0:
         n = len(X)
         raise ValueError(
             f"ExpandingWindowSplit erzeugt 0 Folds (n={n}, initial_window={splitter.initial_window}, "
             f"horizon={splitter.horizon}, step={splitter.step}). "
-            "Lösung: initial_window verkleinern oder längere Daten/größere Schnittmenge X∩y verwenden."
+            "Lösung: initial_window verkleinern oder längere Daten verwenden."
         )
 
     def objective(trial: optuna.trial.Trial) -> float:
@@ -75,23 +74,26 @@ def tune_model(
             ytr, yte = y.iloc[tr_idx], y.iloc[te_idx]
 
             feat_pipe = make_feature_pipeline(**fparams)
+
+            # Train
             Xtr_ft = pd.DataFrame(feat_pipe.fit_transform(Xtr, ytr), index=Xtr.index)
             Xtr_ft, ytr_al = _dropna_align(Xtr_ft, ytr)
             if Xtr_ft.shape[0] == 0 or Xtr_ft.shape[1] == 0:
-                return 1e9  # invalid config → große Strafe
+                return 1e9
 
+            # Fit & Predict
             est = est_factory()
             est.fit(Xtr_ft, ytr_al)
 
+            # Test (LagMaker nutzt Buffer aus fit())
             Xte_ft = pd.DataFrame(feat_pipe.transform(Xte), index=Xte.index)
-            mask = ~np.any(pd.isna(Xte_ft.values), axis=1)
+            mask = ~Xte_ft.isna().any(axis=1)
             if mask.sum() == 0:
                 return 1e9
             yte_sub = yte.loc[mask]
             yhat = _as_series(est.predict(Xte_ft.loc[mask])); yhat.index = yte_sub.index
             scores.append(scorer(yte_sub, yhat))
 
-        # --- NEW: Schutz gegen leere Liste (sollte durch Folds-Check nie passieren)
         if not scores:
             return 1e9
         return float(np.mean(scores))

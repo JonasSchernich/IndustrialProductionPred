@@ -19,7 +19,7 @@ def _ensure_df(X) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------
-# IdentityTransformer (für Pipeline-Kompatibilität)
+# IdentityTransformer
 # ------------------------------------------------------------
 
 class IdentityTransformer(BaseEstimator, TransformerMixin):
@@ -86,39 +86,44 @@ class ColumnSelector(BaseEstimator, TransformerMixin):
 
 
 # ------------------------------------------------------------
-# LagMaker  (SKLearn-klonbar)
+# LagMaker  (klonbar + test-time Buffer aus Train)
 # ------------------------------------------------------------
 
 class LagMaker(BaseEstimator, TransformerMixin):
     """
     Erzeugt Lag-Features aus einem DataFrame.
-
-    Parameter im __init__ werden NICHT verändert (wichtig für sklearn.clone).
-    Alle Konvertierungen passieren in fit() und landen in self.lags_.
+    - Kein Imputing.
+    - Beim transform() werden die letzten max(lags) Zeilen aus fit(X) als Buffer
+      vorangestellt, damit im Test keine NaNs entstehen.
     """
 
     def __init__(self, lags: Iterable[int] = (1,), strategy: str = "value", ema_span: int = 3):
-        self.lags = lags               # NICHT verändern!
+        self.lags = lags               # unverändert lassen (klonbar)
         self.strategy = strategy       # "value" | "diff" | "mom" | "ema"
         self.ema_span = ema_span
 
     def fit(self, X, y=None):
         X = _ensure_df(X)
 
-        # -> erst hier sauber konvertieren
+        # lags sanitisieren
         if isinstance(self.lags, Iterable) and not isinstance(self.lags, (str, bytes)):
             l = list(self.lags)
         else:
             l = [self.lags]
-
         l = [int(abs(int(k))) for k in l if int(k) > 0]
         if not l:
             raise ValueError("lags must contain at least one positive integer.")
-        self.lags_ = tuple(sorted(set(l)))  # interne, saubere Repräsentation
+        self.lags_ = tuple(sorted(set(l)))
+        self.max_lag_ = max(self.lags_)
 
         self.columns_ = list(X.columns)
         self.n_features_in_ = X.shape[1]
+
+        # Buffer: letzte max_lag Zeilen aus Trainings-X
+        self._buffer_ = X.tail(self.max_lag_).copy()
         return self
+
+    # ---- interne Builders
 
     def _make_value(self, X: pd.DataFrame) -> pd.DataFrame:
         frames = []
@@ -146,8 +151,9 @@ class LagMaker(BaseEstimator, TransformerMixin):
             frames.append(ema.shift(L).add_suffix(f"_lag{L}"))
         return pd.concat(frames, axis=1)
 
-    def transform(self, X):
-        X = _ensure_df(X)
+    # ----
+
+    def _build_features(self, X: pd.DataFrame) -> pd.DataFrame:
         if self.strategy == "value":
             out = self._make_value(X)
         elif self.strategy == "diff":
@@ -158,7 +164,22 @@ class LagMaker(BaseEstimator, TransformerMixin):
             out = self._make_ema(X)
         else:
             raise ValueError(f"Unknown strategy '{self.strategy}'.")
-        return out  # DataFrame zurückgeben (mit Spaltennamen)
+        return out
+
+    def transform(self, X):
+        X = _ensure_df(X)
+        if not hasattr(self, "_buffer_"):
+            # falls direkt transform() ohne fit() aufgerufen wurde
+            return self._build_features(X)
+
+        # Train-Tail voranstellen, Features bauen, dann nur den Teil für X zurückgeben
+        cat = pd.concat([self._buffer_, X], axis=0)
+        feats = self._build_features(cat)
+
+        # die letzten len(X) Zeilen (entsprechen X-Index) extrahieren
+        out = feats.tail(len(X))
+        # durch den Buffer sollten hier i.d.R. KEINE NaNs mehr sein
+        return out
 
     def get_feature_names_out(self, input_features=None):
         cols = self.columns_ if hasattr(self, "columns_") else (list(input_features) if input_features is not None else [])
@@ -173,8 +194,9 @@ class LagMaker(BaseEstimator, TransformerMixin):
             for L in self.lags_:
                 names += [f"{c}_mom{L}" for c in cols]
         elif self.strategy == "ema":
+            span = int(self.ema_span)
             for L in self.lags_:
-                names += [f"{c}_ema{int(self.ema_span)}_lag{L}" for c in cols]
+                names += [f"{c}_ema{span}_lag{L}" for c in cols]
         return np.array(names)
 
 
@@ -184,9 +206,8 @@ class LagMaker(BaseEstimator, TransformerMixin):
 
 class ShockMonthDummyFromTarget(BaseEstimator, TransformerMixin):
     """
-    Erzeugt eine Dummy-Spalte für 'Schockmonate' der Zielvariable.
-    - fit(): bestimmt Schockmonate NUR aus y_train (keine Leakage)
-    - transform(): gibt Dummy (0/1) im Index von X zurück
+    Erzeugt eine Dummy-Spalte für 'Schockmonate' der Zielvariable (nur aus y_train).
+    Kein Imputing.
     """
 
     def __init__(self, sigma: Optional[float] = None):
@@ -222,12 +243,13 @@ class ShockMonthDummyFromTarget(BaseEstimator, TransformerMixin):
 
 
 # ------------------------------------------------------------
-# PerGroupTransformer
+# PerGroupTransformer  (präfixfreundlich)
 # ------------------------------------------------------------
 
 class PerGroupTransformer(BaseEstimator, TransformerMixin):
     """
     Wendet einen Basis-Transformer getrennt je Feature-Gruppe an und konkateniert die Ergebnisse.
+    'groups' darf entweder exakte Spaltennamen ODER Präfixe enthalten.
     """
 
     def __init__(self, base_transformer: TransformerMixin, groups: Optional[Dict[str, List[str]]] = None):
@@ -236,18 +258,35 @@ class PerGroupTransformer(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         X = _ensure_df(X)
+
+        def expand_items(items, cols):
+            items = list(items)
+            exact = [c for c in items if c in cols]
+            if not exact:
+                expanded = [c for c in cols if any(c.startswith(p) for p in items)]
+            else:
+                expanded = set(exact)
+                expanded.update(c for c in cols if any(c.startswith(p) for p in items))
+                expanded = list(expanded)
+            return list(dict.fromkeys(expanded))  # stable unique
+
         if self.groups is None:
             grp = {"ALL": list(X.columns)}
         else:
-            grp = {g: [c for c in cols if c in X.columns] for g, cols in self.groups.items() if len(cols) > 0}
+            grp = {}
+            for g, items in self.groups.items():
+                expanded = expand_items(items, list(X.columns))
+                if expanded:
+                    grp[g] = expanded
+
+        if not grp:
+            grp = {"ALL": list(X.columns)}
 
         self.groups_ = grp
         self.transformers_ = {}
         self.feature_names_out_ = []
 
         for g, cols in self.groups_.items():
-            if len(cols) == 0:
-                continue
             Xt = X.loc[:, cols]
             m = clone(self.base_transformer)
             m.fit(Xt, y)
@@ -265,8 +304,6 @@ class PerGroupTransformer(BaseEstimator, TransformerMixin):
         X = _ensure_df(X)
         outs = []
         for g, cols in self.groups_.items():
-            if len(cols) == 0:
-                continue
             Xt = X.loc[:, cols]
             m = self.transformers_[g]
             outs.append(_ensure_df(m.transform(Xt)))

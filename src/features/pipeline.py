@@ -43,7 +43,7 @@ def _core_steps(
 ) -> Pipeline:
     steps = []
 
-    # 1) Spaltenauswahl
+    # 1) Spaltenauswahl (keine Imputation)
     steps.append(("select", ColumnSelector(
         manual_features=manual_features,
         include_regex=include_regex,
@@ -54,7 +54,7 @@ def _core_steps(
     if use_pca and pca_groups and pca_n_components > 0 and pca_before_lags:
         steps.append(("pca", PCAByGroup(groups=pca_groups, n_components=int(pca_n_components))))
 
-    # 3) Lags (ggf. gruppenweise)
+    # 3) Lags (ggf. gruppenweise) – ohne Imputation
     lagger = LagMaker(lags=lags, strategy=lag_strategy, ema_span=int(ema_span))
     if groupwise_lags:
         steps.append(("lags", PerGroupTransformer(base_transformer=lagger, groups=groupwise_lags)))
@@ -104,8 +104,8 @@ def make_feature_pipeline(
     pca_before_lags: bool = False,
 ) -> Pipeline:
     """
-    Baut die komplette Feature-Pipeline. Bei shock_dummy_sigma wird die Kernpipeline
-    mit einem Shock-Dummy per Union erweitert.
+    Baut die komplette Feature-Pipeline ohne jegliche Imputation.
+    Erwartung: Eingangs-Features sind bereits 'clean' (keine NaNs).
     """
     core = _core_steps(
         manual_features=manual_features,
@@ -132,9 +132,10 @@ def make_feature_pipeline(
     if shock_dummy_sigma is None:
         return core
 
-    # Kernfeatures + Shock-Dummy zusammenführen
+    # Kernfeatures + Shock-Dummy zusammenführen (ohne Imputation)
     union = FeatureFrameUnion([
         ("core", core),
         ("shock", ShockMonthDummyFromTarget(sigma=float(shock_dummy_sigma))),
     ])
     return union
+
