@@ -1,0 +1,30 @@
+model: elasticnet
+metric: mae
+device: cpu
+
+feature_space:
+  lags:
+    choices: ["1,2,3"]     # Strings, werden zu (1,2,3) geparst
+  lag_strategy:
+    choices: ["value"]     # nur „value“ (keine EMA/MoM)
+  use_intercorr:
+    choices: [false]
+  use_corr_selector:
+    choices: [false]
+  use_variance_threshold:
+    choices: [false]
+  use_pca:
+    choices: [false]
+  use_shock_dummy:
+    choices: [false]
+
+model_space:
+  alpha:
+    type: float
+    low: 1e-4
+    high: 1.0
+    log: true
+  l1_ratio:
+    type: float
+    low: 0.0
+    high: 1.0
