@@ -1,3 +1,0 @@
-device: cpu          # cpu | cuda
-n_jobs: -1
-num_workers: 4
