@@ -1,12 +1,8 @@
-# tsforecast/models/registry.py
 from __future__ import annotations
 from typing import Dict, Any, Callable
 
-# kleine Hilfen
 def _lower(s: str) -> str:
     return s.strip().lower().replace(" ", "").replace("_", "")
-
-# --- Factories (mit Import-Guards) ---
 
 def _make_elasticnet(params: Dict[str, Any]):
     from .elasticnet import make_elasticnet
@@ -58,8 +54,6 @@ def _make_chronos(params: Dict[str, Any]):
     except Exception as e:
         raise ImportError("Chronos nicht verfügbar (pip install chronos-forecasting torch)") from e
     return ChronosRegressor(**params)
-
-# --- Registry & Aliases ---
 
 _REGISTRY: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "elasticnet": _make_elasticnet,
