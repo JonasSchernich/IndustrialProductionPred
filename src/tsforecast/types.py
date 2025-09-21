@@ -40,6 +40,7 @@ class FeEngCfg:
     candidate_ema_sets: Tuple[Tuple[int, ...], ...] = ((), (3,), (6,), (3,6))
     # PCA candidates: (pca_n, pca_var); exactly one should be non-None; (None, None) = no PCA
     candidate_pca: Tuple[Tuple[Optional[int], Optional[float]], ...] = ((None, None),)
+    pca_stage_options: Tuple[str, ...] = ("post",)  # neu: "pre" oder "post"
     # Per-feature lagging: choose best k lags per base feature by |corr| to y in-train
     per_feature_lags: bool = False
     per_feature_candidates: Tuple[int, ...] = (1,3,6,12)

@@ -3,9 +3,10 @@ from __future__ import annotations
 from typing import Dict, Iterable, Tuple, Optional
 import pandas as pd
 import numpy as np
-
+import os
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+_TSF_CACHE = {}
 
 def make_global_lags(X: pd.DataFrame, lags: Iterable[int]) -> pd.DataFrame:
     lags = sorted({int(l) for l in lags if int(l) >= 1})
@@ -83,8 +84,9 @@ def build_engineered_matrix(
 
     if not parts:
         return pd.DataFrame(index=X.index)
-    M = pd.concat(parts, axis=1)
-    return M.dropna(axis=1, how="all")
+    # ganz am Ende von build_engineered_matrix, bevor return
+    M = _maybe_merge_external_blocks(M, X.index, fe_spec)
+    return M
 
 def apply_pca_train_transform(
     M_train: pd.DataFrame, M_eval: pd.DataFrame,
@@ -111,3 +113,30 @@ def apply_pca_train_transform(
     Mtr_p = pd.DataFrame(Ztr_p, index=M_train.index, columns=cols)
     Mev_p = pd.DataFrame(Zev_p, index=M_eval.index, columns=cols)
     return Mtr_p, Mev_p
+
+def _load_ext_features(path: str) -> pd.DataFrame:
+    if path in _TSF_CACHE:
+        return _TSF_CACHE[path]
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    if path.endswith(".parquet"):
+        df = pd.read_parquet(path)
+    else:
+        df = pd.read_csv(path, index_col=0, parse_dates=True)
+    _TSF_CACHE[path] = df
+    return df
+
+def _maybe_merge_external_blocks(M: pd.DataFrame, X_index, fe_spec: dict) -> pd.DataFrame:
+    # tsfresh (vorgekocht)
+    tsf_path = fe_spec.get("tsfresh_path")
+    if tsf_path:
+        F = _load_ext_features(tsf_path)
+        F = F.reindex(X_index).shift(1)  # leakage-sicher
+        M = pd.concat([M, F], axis=1)
+    # Foundational-Model-Stack (vorgekocht)
+    fm_path = fe_spec.get("fm_pred_path")
+    if fm_path:
+        S = _load_ext_features(fm_path)  # erwartet 1 oder wenige Spalten
+        S = S.reindex(X_index).shift(1)
+        M = pd.concat([M, S], axis=1)
+    return M

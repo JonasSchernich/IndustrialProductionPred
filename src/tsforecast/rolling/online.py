@@ -1,28 +1,26 @@
-
+# rolling/online.py
 from __future__ import annotations
-from typing import Dict, List, Tuple, Optional, Callable
-import sys
+from typing import Dict, List, Tuple, Optional
 import numpy as np
 import pandas as pd
-
-from ..types import FeatureSelectCfg, FeEngCfg
+import sys
+from ..tuning.grid import expand_grid
+from ..types import FeatureSelectCfg
 from ..features.selection import select_engineered_features
 from ..features.engineering import (
-    make_per_feature_lags_by_corr, build_engineered_matrix, apply_pca_train_transform
+    build_engineered_matrix, apply_pca_train_transform
 )
 from ..models.registry import build_estimator
-from ..tuning.grid import expand_grid
 
 BASELINE_MODELS = {"mean", "avg", "average", "randomwalk", "rw", "naive", "ar1", "ar(1)"}
+PCA_STAGE_DEFAULT = "post"  # "pre" oder "post" – vom Notebook aus umschaltbar
 
 def _align_after_engineering(M: pd.DataFrame, y: pd.Series):
     mask = ~M.isna().any(axis=1)
     if not mask.any():
         return M.iloc[0:0], y.iloc[0:0]
     first = int(np.argmax(mask.values))
-    M2 = M.iloc[first:, :]
-    y2 = y.iloc[first:]
-    return M2, y2
+    return M.iloc[first:, :], y.iloc[first:]
 
 def score_config_for_next_step(
     X: pd.DataFrame, y: pd.Series, t: int,
@@ -30,6 +28,7 @@ def score_config_for_next_step(
     fs_cfg: FeatureSelectCfg,
     model_name: str, model_params: Dict, metric_fn
 ) -> Tuple[float, float, Optional[List[str]]]:
+    # Baselines
     if model_name.lower() in BASELINE_MODELS:
         ytr = y.iloc[:t+1]
         est = build_estimator(model_name, dict(model_params))
@@ -38,23 +37,52 @@ def score_config_for_next_step(
         val = float(metric_fn([y.iloc[t+1]], [yhat]))
         return val, yhat, None
 
-    Xtr = X.iloc[:t+1, :][base_features]
-    Xev = X.iloc[:t+2, :][base_features]
-    Mtr = build_engineered_matrix(Xtr, base_features, fe_spec)
-    Mev_full = build_engineered_matrix(Xev, base_features, fe_spec).iloc[[-1], :]
-    if Mtr.shape[1] == 0:
-        raise ValueError("Engineered matrix has 0 columns. Check FE spec.")
-    Mtr2, ytr2 = _align_after_engineering(Mtr, y.iloc[:t+1])
-
-    eng_cols = select_engineered_features(Mtr2, ytr2, fs_cfg)
-    if len(eng_cols) == 0:
-        raise ValueError("No engineered columns selected. Adjust fs_cfg (topk/threshold/variance).")
-    Mtr_sel = Mtr2[eng_cols]
-    Mev_sel = Mev_full[eng_cols]
-
-    pca_n = fe_spec.get("pca_n") if isinstance(fe_spec, dict) else None
+    # PCA-Config
+    pca_n   = fe_spec.get("pca_n")   if isinstance(fe_spec, dict) else None
     pca_var = fe_spec.get("pca_var") if isinstance(fe_spec, dict) else None
-    Mtr_fin, Mev_fin = apply_pca_train_transform(Mtr_sel, Mev_sel, pca_n=pca_n, pca_var=pca_var)
+    # Wahl: fe_spec['pca_stage'] hat Vorrang, sonst globaler Default
+    try:
+        pca_stage = (fe_spec.get("pca_stage") or PCA_STAGE_DEFAULT).lower()
+    except Exception:
+        pca_stage = str(PCA_STAGE_DEFAULT).lower()
+
+    # Daten-Slices
+    Xtr = X.iloc[:t+1, :][base_features]
+    Xev = X.iloc[:t+2, :][base_features]  # letzte Zeile = t+1
+
+    if pca_stage == "pre" and (pca_n is not None or pca_var is not None):
+        # PRE-PCA: Basis -> PCs -> (darauf) Lags/RM/EMA
+        PCtr, PCev = apply_pca_train_transform(Xtr, Xev, pca_n=pca_n, pca_var=pca_var)
+        pc_cols = list(PCtr.columns)
+
+        Mtr = build_engineered_matrix(PCtr, pc_cols, fe_spec)
+        Mev_full = build_engineered_matrix(PCev, pc_cols, fe_spec).iloc[[-1], :]
+        if Mtr.shape[1] == 0:
+            raise ValueError("Engineered matrix has 0 columns. Check FE spec.")
+
+        Mtr2, ytr2 = _align_after_engineering(Mtr, y.iloc[:t+1])
+        eng_cols = select_engineered_features(Mtr2, ytr2, fs_cfg)
+        if len(eng_cols) == 0:
+            raise ValueError("No engineered columns selected. Adjust fs_cfg.")
+
+        Mtr_fin = Mtr2[eng_cols]
+        Mev_fin = Mev_full[eng_cols]
+
+    else:
+        # POST-PCA (Standard): Basis -> Lags/RM/EMA -> Selektion -> (optional) PCA
+        Mtr = build_engineered_matrix(Xtr, base_features, fe_spec)
+        Mev_full = build_engineered_matrix(Xev, base_features, fe_spec).iloc[[-1], :]
+        if Mtr.shape[1] == 0:
+            raise ValueError("Engineered matrix has 0 columns. Check FE spec.")
+
+        Mtr2, ytr2 = _align_after_engineering(Mtr, y.iloc[:t+1])
+        eng_cols = select_engineered_features(Mtr2, ytr2, fs_cfg)
+        if len(eng_cols) == 0:
+            raise ValueError("No engineered columns selected. Adjust fs_cfg.")
+
+        Mtr_sel = Mtr2[eng_cols]
+        Mev_sel = Mev_full[eng_cols]
+        Mtr_fin, Mev_fin = apply_pca_train_transform(Mtr_sel, Mev_sel, pca_n=pca_n, pca_var=pca_var)
 
     est = build_estimator(model_name, dict(model_params))
     est.fit(Mtr_fin, ytr2)
@@ -62,25 +90,42 @@ def score_config_for_next_step(
     val = float(metric_fn([y.iloc[t+1]], [yhat]))
     return val, yhat, eng_cols
 
+
+
 def _fe_candidates_from_cfg(Xtr, ytr, base_features, fe_cfg: FeEngCfg):
     specs = []
-    if fe_cfg.per_feature_lags:
-        lag_map = make_per_feature_lags_by_corr(
-            Xtr[base_features], ytr, fe_cfg.per_feature_candidates, fe_cfg.per_feature_topk
-        )
-        for rms in fe_cfg.candidate_rm_sets:
-            for emas in fe_cfg.candidate_ema_sets:
-                for pca_n, pca_var in fe_cfg.candidate_pca:
-                    specs.append({"lag_map": lag_map, "rm_windows": rms, "ema_spans": emas,
-                                  "pca_n": pca_n, "pca_var": pca_var})
-    else:
-        for lset in fe_cfg.candidate_lag_sets:
-            for rms in fe_cfg.candidate_rm_sets:
-                for emas in fe_cfg.candidate_ema_sets:
-                    for pca_n, pca_var in fe_cfg.candidate_pca:
-                        specs.append({"lags": lset, "rm_windows": rms, "ema_spans": emas,
-                                      "pca_n": pca_n, "pca_var": pca_var})
+    stages = getattr(fe_cfg, "pca_stage_options", ("post",))
+    for stage in stages:
+        for pca_n, pca_var in fe_cfg.candidate_pca:
+            if fe_cfg.per_feature_lags:
+                if stage == "pre" and (pca_n is not None or pca_var is not None):
+                    # PCA auf Basisfeatures fitten -> auf Train transformieren
+                    Mtr_p, _ = apply_pca_train_transform(Xtr[base_features], Xtr[base_features],
+                                                         pca_n=pca_n, pca_var=pca_var)
+                    lag_map = make_per_feature_lags_by_corr(Mtr_p, ytr,
+                                                            fe_cfg.per_feature_candidates,
+                                                            fe_cfg.per_feature_topk)
+                    for rms in fe_cfg.candidate_rm_sets:
+                        for emas in fe_cfg.candidate_ema_sets:
+                            specs.append({"pca_stage": "pre", "pca_n": pca_n, "pca_var": pca_var,
+                                          "lag_map": lag_map, "rm_windows": rms, "ema_spans": emas})
+                else:
+                    lag_map = make_per_feature_lags_by_corr(
+                        Xtr[base_features], ytr, fe_cfg.per_feature_candidates, fe_cfg.per_feature_topk
+                    )
+                    for rms in fe_cfg.candidate_rm_sets:
+                        for emas in fe_cfg.candidate_ema_sets:
+                            specs.append({"pca_stage": "post", "pca_n": pca_n, "pca_var": pca_var,
+                                          "lag_map": lag_map, "rm_windows": rms, "ema_spans": emas})
+            else:
+                for lset in fe_cfg.candidate_lag_sets:
+                    for rms in fe_cfg.candidate_rm_sets:
+                        for emas in fe_cfg.candidate_ema_sets:
+                            specs.append({"pca_stage": ("pre" if stage == "pre" else "post"),
+                                          "pca_n": pca_n, "pca_var": pca_var,
+                                          "lags": lset, "rm_windows": rms, "ema_spans": emas})
     return specs
+
 
 def _count_evals(n_hp: int, n_fe: int, optimize_fe_for_all_hp: bool) -> int:
     if n_hp <= 0 or n_fe <= 0:
