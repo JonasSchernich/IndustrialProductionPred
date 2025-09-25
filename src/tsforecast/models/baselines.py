@@ -20,12 +20,15 @@ class MeanModel(BaseEstimator, RegressorMixin):
 class RandomWalkModel(BaseEstimator, RegressorMixin):
     def __init__(self):
         self.last_: Optional[float] = None
+    # baselines.py
     def fit(self, X, y):
         y = np.asarray(y, dtype=float)
-        if y.size == 0:
-            raise ValueError("y is empty")
-        self.last_ = float(y[-1])
+        valid = y[np.isfinite(y)]
+        if valid.size == 0:
+            raise ValueError("y has no finite values")
+        self.last_ = float(valid[-1])
         return self
+
     def predict(self, X):
         n = getattr(X, 'shape', [len(X)])[0]
         return np.full(n, self.last_, dtype=float)
