@@ -59,17 +59,46 @@ def make_ema(X: pd.DataFrame, spans: Iterable[int]) -> pd.DataFrame:
 
 _EXT_CACHE = {}
 
+# tsforecast/features/engineering.py
 def _load_ext_features(path: str) -> pd.DataFrame:
     if path in _EXT_CACHE:
         return _EXT_CACHE[path]
     if not os.path.exists(path):
         raise FileNotFoundError(path)
-    if path.endswith(".parquet"):
-        df = pd.read_parquet(path)
+
+    if os.path.isdir(path):
+        import glob, pyarrow.parquet as pq
+        dfs = []
+        for fp in sorted(glob.glob(os.path.join(path, "*.parquet"))):
+            try:
+                dfs.append(pd.read_parquet(fp))
+            except Exception:
+                # Fallback mit erhöhten Limits
+                tbl = pq.read_table(
+                    fp,
+                    thrift_string_size_limit=1 << 31,
+                    thrift_container_size_limit=1 << 31,
+                )
+                dfs.append(tbl.to_pandas())
+        df = pd.concat(dfs, axis=1) if dfs else pd.DataFrame()
+
+    elif path.endswith(".parquet"):
+        try:
+            df = pd.read_parquet(path)
+        except Exception:
+            import pyarrow.parquet as pq
+            tbl = pq.read_table(
+                path,
+                thrift_string_size_limit=1 << 31,
+                thrift_container_size_limit=1 << 31,
+            )
+            df = tbl.to_pandas()
     else:
         df = pd.read_csv(path, index_col=0, parse_dates=True)
+
     _EXT_CACHE[path] = df
     return df
+
 
 def _maybe_merge_external_blocks(M: pd.DataFrame, X_index, fe_spec: dict) -> pd.DataFrame:
     # tsfresh precomputed features

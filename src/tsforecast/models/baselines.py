@@ -37,23 +37,27 @@ class AR1Model(BaseEstimator, RegressorMixin):
         self.intercept_: float = 0.0
         self.y_last_: Optional[float] = None
     def fit(self, X, y):
+        # in baselines.AR1Model.fit(self, X, y)
         y = np.asarray(y, dtype=float)
-        if y.size < 2:
-            raise ValueError("Need at least 2 observations to fit AR(1).")
-        y_lag = y[:-1]
-        y_cur = y[1:]
+        # gültige Nachbarpaare
+        y0, y1 = y[:-1], y[1:]
+        mask = np.isfinite(y0) & np.isfinite(y1)
+        y0, y1 = y0[mask], y1[mask]
+        if y1.size == 0:
+            raise ValueError("Need ≥1 valid (y[t-1], y[t]) pair for AR(1).")
         if self.fit_intercept:
-            import numpy as np
-            Xmat = np.column_stack([np.ones_like(y_lag), y_lag])
-            beta, *_ = np.linalg.lstsq(Xmat, y_cur, rcond=None)
+            Xmat = np.column_stack([np.ones_like(y0), y0])
+            beta, *_ = np.linalg.lstsq(Xmat, y1, rcond=None)
             self.intercept_, self.coef_ = float(beta[0]), float(beta[1])
         else:
-            import numpy as np
-            Xmat = y_lag.reshape(-1, 1)
-            beta, *_ = np.linalg.lstsq(Xmat, y_cur, rcond=None)
+            Xmat = y0.reshape(-1, 1)
+            beta, *_ = np.linalg.lstsq(Xmat, y1, rcond=None)
             self.intercept_, self.coef_ = 0.0, float(beta[0])
-        self.y_last_ = float(y[-1])
+        # letzte gültige y
+        valid = np.asarray(y[np.isfinite(y)], dtype=float)
+        self.y_last_ = float(valid[-1])
         return self
+
     def predict(self, X):
         n = getattr(X, 'shape', [len(X)])[0]
         yhat1 = self.intercept_ + (self.coef_ * self.y_last_)

@@ -125,6 +125,7 @@ def online_rolling_forecast(
     progress: bool = False, progress_fn: Optional[Callable] = None
 ):
     """Walk-forward: best-init, then one-step delayed search each step."""
+
     base_features0 = list(X.columns)
     start_t = initial_window - 1
 
