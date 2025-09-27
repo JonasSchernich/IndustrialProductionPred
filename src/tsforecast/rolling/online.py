@@ -89,30 +89,26 @@ def score_config_for_next_step(
     val = float(metric_fn([y.iloc[t+1]], [yhat]))
     return val, yhat, eng_cols
 
-def _fe_candidates_from_cfg(Xtr, ytr, base_features, fe_cfg: FeEngCfg):
-    """Build FE candidate specs. Propagate optional external paths (tsfresh/fm)."""
-    specs = []
-    extra = {k: getattr(fe_cfg, k) for k in ("tsfresh_path", "fm_pred_path") if hasattr(fe_cfg, k)}
-
+def _fe_candidates_from_cfg(Xtr, ytr, base_features, fe_cfg):
+    specs, extra = [], {k: getattr(fe_cfg, k) for k in ("tsfresh_path","fm_pred_path") if hasattr(fe_cfg,k)}
     if fe_cfg.per_feature_lags:
-        lag_map = make_per_feature_lags_by_corr(
-            Xtr[base_features], ytr, fe_cfg.per_feature_candidates, fe_cfg.per_feature_topk
-        )
+        lag_map = make_per_feature_lags_by_corr(Xtr[base_features], ytr, fe_cfg.per_feature_candidates, fe_cfg.per_feature_topk)
         for rms in fe_cfg.candidate_rm_sets:
             for emas in fe_cfg.candidate_ema_sets:
                 for pca_n, pca_var in fe_cfg.candidate_pca:
-                    spec = {"lag_map": lag_map, "rm_windows": rms, "ema_spans": emas,
-                            "pca_n": pca_n, "pca_var": pca_var, **extra}
-                    specs.append(spec)
+                    for pca_stage in fe_cfg.pca_stage_options:
+                        specs.append({"lag_map": lag_map, "rm_windows": rms, "ema_spans": emas,
+                                      "pca_n": pca_n, "pca_var": pca_var, "pca_stage": pca_stage, **extra})
     else:
         for lset in fe_cfg.candidate_lag_sets:
             for rms in fe_cfg.candidate_rm_sets:
                 for emas in fe_cfg.candidate_ema_sets:
                     for pca_n, pca_var in fe_cfg.candidate_pca:
-                        spec = {"lags": lset, "rm_windows": rms, "ema_spans": emas,
-                                "pca_n": pca_n, "pca_var": pca_var, **extra}
-                        specs.append(spec)
+                        for pca_stage in fe_cfg.pca_stage_options:
+                            specs.append({"lags": lset, "rm_windows": rms, "ema_spans": emas,
+                                          "pca_n": pca_n, "pca_var": pca_var, "pca_stage": pca_stage, **extra})
     return specs
+
 
 def _count_evals(n_hp: int, n_fe: int, full: bool) -> int:
     return n_hp * n_fe if full else n_hp + (n_fe - 1)
@@ -125,6 +121,9 @@ def online_rolling_forecast(
     progress: bool = False, progress_fn: Optional[Callable] = None
 ):
     """Walk-forward: best-init, then one-step delayed search each step."""
+    # online.py
+    if horizon != 1:
+        raise NotImplementedError("Aktuell nur horizon=1 korrekt implementiert.")
 
     base_features0 = list(X.columns)
     start_t = initial_window - 1

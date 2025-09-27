@@ -71,6 +71,8 @@ _REGISTRY: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "ar1": _make_ar1,
     "tabpfn": _make_tabpfn,
     "chronos": _make_chronos,
+    "naive": _make_randomwalk,
+    "ar(1)": _make_ar1,
 }
 
 def build_estimator(model_name: str, params: Dict[str, Any]):
