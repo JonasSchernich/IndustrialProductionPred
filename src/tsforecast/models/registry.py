@@ -1,43 +1,38 @@
 from __future__ import annotations
 from typing import Dict, Any
+import numpy as np
 
-# Falls bei dir schon vorhanden: build_estimator import behalten
-from .xgboost import build_estimator as build_xgb  # optional guard in deiner Struktur
-try:
-    from .lightgbm import build_estimator as build_lgbm
-except Exception:
-    build_lgbm = None
-from .baselines import build_estimator as build_baselines  # falls vorhanden
-# ... weitere Modelle importieren wie in deinem Projekt üblich
-
-# Einheitlicher Entry-Point
 def build_estimator(model_name: str, params: Dict[str, Any]):
-    name = model_name.lower()
-    if name in ("xgb", "xgboost"):
-        return build_xgb(params)
-    if name in ("lgbm", "lightgbm"):
-        if build_lgbm is None:
-            raise ImportError("LightGBM not available")
-        return build_lgbm(params)
-    # Baselines (rw, mean, ar1 etc.)
-    return build_baselines(model_name, params)
+    name = (model_name or "").lower()
 
-# Fähigkeiten (minimal)
-MODEL_CAPS: Dict[str, Dict[str, bool]] = {
-    "xgb": {"supports_es": True},
-    "xgboost": {"supports_es": True},
-    "lgbm": {"supports_es": True},
-    "lightgbm": {"supports_es": True},
-    "mean": {"supports_es": False},
-    "avg": {"supports_es": False},
-    "average": {"supports_es": False},
-    "randomwalk": {"supports_es": False},
-    "rw": {"supports_es": False},
-    "naive": {"supports_es": False},
-    "ar1": {"supports_es": False},
-    "ar(1)": {"supports_es": False},
-    # ergänze weitere Modelle bei Bedarf
-}
+    if name in ("xgb", "xgboost"):
+        from .xgboost import build_estimator as _bx
+        return _bx(params)
+
+    if name in ("lgbm", "lightgbm"):
+        from .lightgbm import build_estimator as _bl
+        return _bl(params)
+
+    if name in ("elasticnet", "en", "enet"):
+        from .elasticnet import build_estimator as _be
+        return _be(params)
+
+    if name in ("tabpfn", "tab-pfn"):
+        from .tabpfn import build_estimator as _bt
+        return _bt(params)
+
+    if name in ("mean", "avg", "average"):
+        from .baselines import MeanModel
+        return MeanModel()
+    if name in ("randomwalk", "rw", "naive"):
+        from .baselines import RandomWalkModel
+        return RandomWalkModel()
+    if name in ("ar1", "ar(1)"):
+        from .baselines import AR1Model
+        return AR1Model()
+
+    raise ValueError(f"unknown model_name='{model_name}'")
 
 def supports_es(model_name: str) -> bool:
-    return MODEL_CAPS.get(model_name.lower(), {}).get("supports_es", False)
+    name = (model_name or "").lower()
+    return name in {"xgb", "xgboost", "lgbm", "lightgbm"}

@@ -187,6 +187,9 @@ if __name__ == "__main__":
         + "."
         + panel_long["indicator"].astype(str).str.strip().str.replace(r"\s+", "_", regex=True)
     )
+
+
+
     features_wide = panel_long.pivot_table(index="date", columns="feature_name", values="value", aggfunc="last")
 
     # Monatsindex + Duplikate raus

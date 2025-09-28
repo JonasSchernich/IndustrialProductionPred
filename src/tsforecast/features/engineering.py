@@ -1,151 +1,180 @@
 from __future__ import annotations
-from typing import Dict, Iterable, Tuple, Optional
-import os
+from typing import Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 import numpy as np
+
+# === Grundfunktionen ===
+
+def make_global_lags(X: pd.DataFrame, lags: Iterable[int]) -> pd.DataFrame:
+    lags = list(sorted(set(int(l) for l in lags if int(l) > 0)))
+    out = {}
+    for c in X.columns:
+        for L in lags:
+            out[f"{c}_lag{L}"] = X[c].shift(L)
+    M = pd.DataFrame(out, index=X.index)
+    return M
+
+def make_per_feature_lags_by_corr(
+    Xtr: pd.DataFrame,
+    ytr: pd.Series,
+    candidates: Iterable[int],
+    topk: int = 1
+) -> Dict[str, List[int]]:
+    # wähle pro Basisfeature die Lags mit größter |corr| (Train)
+    cand = [int(l) for l in candidates if int(l) > 0]
+    corr_map = {}
+    for c in Xtr.columns:
+        vals = {}
+        for L in cand:
+            s = Xtr[c].shift(L)
+            vals[L] = abs(s.corr(ytr))
+        best = sorted(vals.items(), key=lambda kv: (-(0.0 if np.isnan(kv[1]) else kv[1]), kv[0]))[: max(1, int(topk))]
+        corr_map[c] = [b[0] for b in best]
+    return corr_map
+
+def apply_per_feature_lags(X: pd.DataFrame, lag_map: Dict[str, List[int]]) -> pd.DataFrame:
+    out = {}
+    for c, Ls in lag_map.items():
+        if c not in X.columns:
+            continue
+        for L in sorted(set(Ls)):
+            out[f"{c}_lag{L}"] = X[c].shift(L)
+    return pd.DataFrame(out, index=X.index)
+
+def make_rolling_means(X: pd.DataFrame, windows: Iterable[int]) -> pd.DataFrame:
+    ws = [int(w) for w in windows if int(w) > 0]
+    out = {}
+    for c in X.columns:
+        for w in ws:
+            out[f"{c}_rm{w}"] = X[c].rolling(window=w, min_periods=w).mean().shift(1)
+    return pd.DataFrame(out, index=X.index)
+
+def make_ema(X: pd.DataFrame, spans: Iterable[int]) -> pd.DataFrame:
+    ss = [int(s) for s in spans if int(s) > 0]
+    out = {}
+    for c in X.columns:
+        for s in ss:
+            out[f"{c}_ema{s}"] = X[c].ewm(span=s, adjust=False, min_periods=s).mean().shift(1)
+    return pd.DataFrame(out, index=X.index)
+
+# === Externe Blöcke ===
+
+def _load_parquet_safe(path: str) -> pd.DataFrame:
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        import pyarrow.parquet as pq  # fallback
+        return pq.read_table(path).to_pandas()
+
+def _shift_all_cols(M: pd.DataFrame, k: int = 1) -> pd.DataFrame:
+    return M.shift(k)
+
+def _merge_external_blocks(X: pd.DataFrame, fe_spec: Dict) -> pd.DataFrame:
+    M = X
+    # tsfresh
+    tsfresh_path = fe_spec.get("tsfresh_path")
+    if tsfresh_path:
+        T = _load_parquet_safe(tsfresh_path)
+        T = T.reindex(X.index).copy()
+        T = _shift_all_cols(T, 1)
+        M = M.join(T, how="left")
+    # foundation model 1-step preds
+    fm_pred_path = fe_spec.get("fm_pred_path")
+    if fm_pred_path:
+        F = _load_parquet_safe(fm_pred_path)
+        F = F.reindex(X.index).copy()
+        F = _shift_all_cols(F, 1)
+        M = M.join(F, how="left")
+    return M
+
+def _cast_float32(M: pd.DataFrame) -> pd.DataFrame:
+    # nur numerische Spalten auf float32
+    num = M.select_dtypes(include=[np.number]).columns
+    M[num] = M[num].astype(np.float32)
+    return M
+
+# === Orchestrierung Engineering ===
+
+def build_engineered_matrix(
+    X: pd.DataFrame,
+    base_features: List[str],
+    fe_spec: Dict
+) -> pd.DataFrame:
+    """
+    Kombiniert Lags/Per-Feature-Lags, RM, EMA und externe Blöcke. Leakage-sicher (shift in RM/EMA/externe).
+    """
+    Xb = X[base_features].copy()
+    blocks = []
+
+    # Lags
+    lag_map = fe_spec.get("lag_map")
+    lags = fe_spec.get("lags")
+    if lag_map is not None:
+        blocks.append(apply_per_feature_lags(Xb, lag_map))
+    elif lags is not None:
+        blocks.append(make_global_lags(Xb, lags))
+
+    # Rolling / EMA (immer auf Basisfeatures; optional auch auf Lags – hier konservativ)
+    rm_windows = fe_spec.get("rm_windows") or ()
+    if len(rm_windows) > 0:
+        blocks.append(make_rolling_means(Xb, rm_windows))
+
+    ema_spans = fe_spec.get("ema_spans") or ()
+    if len(ema_spans) > 0:
+        blocks.append(make_ema(Xb, ema_spans))
+
+    # Merge Blöcke
+    if blocks:
+        M = pd.concat(blocks, axis=1)
+    else:
+        M = pd.DataFrame(index=X.index)  # leer
+
+    # Externe Blöcke (shifted)
+    if ("tsfresh_path" in fe_spec and fe_spec["tsfresh_path"]) or ("fm_pred_path" in fe_spec and fe_spec["fm_pred_path"]):
+        M = M.join(_merge_external_blocks(X, fe_spec), how="left")
+
+    # float32
+    M = _cast_float32(M)
+
+    return M
+
+# === PCA ===
 
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-# ---- basic FE blocks ----
-
-def make_global_lags(X: pd.DataFrame, lags: Iterable[int]) -> pd.DataFrame:
-    lags = sorted({int(l) for l in lags if int(l) >= 1})
-    if not lags:
-        return pd.DataFrame(index=X.index)
-    parts = []
-    for l in lags:
-        df = X.shift(l)
-        df.columns = [f"{c}_lag{l}" for c in X.columns]
-        parts.append(df)
-    return pd.concat(parts, axis=1) if parts else pd.DataFrame(index=X.index)
-
-def make_per_feature_lags_by_corr(Xtr: pd.DataFrame, ytr: pd.Series, candidates: Iterable[int], topk: int) -> Dict[str, Tuple[int, ...]]:
-    lags = sorted({int(l) for l in candidates if int(l) >= 1})
-    out = {}
-    for c in Xtr.columns:
-        tmp = {l: Xtr[c].shift(l).corr(ytr) for l in lags}
-        # rank by |corr|
-        best = sorted(tmp.items(), key=lambda kv: abs(kv[1] if kv[1] is not None else 0.0), reverse=True)[:topk]
-        out[c] = tuple(l for l, _ in best)
-    return out
-
-def apply_per_feature_lags(X: pd.DataFrame, lag_map: Dict[str, Tuple[int, ...]]) -> pd.DataFrame:
-    parts = []
-    for c, lags in lag_map.items():
-        for l in lags:
-            parts.append(X[c].shift(l).rename(f"{c}_lag{l}"))
-    return pd.concat(parts, axis=1) if parts else pd.DataFrame(index=X.index)
-
-def make_rolling_means(X: pd.DataFrame, windows: Iterable[int]) -> pd.DataFrame:
-    wins = sorted({int(w) for w in windows if int(w) >= 1})
-    parts = []
-    for w in wins:
-        df = X.rolling(window=w, min_periods=w).mean().shift(1)
-        df.columns = [f"{c}_rm{w}" for c in X.columns]
-        parts.append(df)
-    return pd.concat(parts, axis=1) if parts else pd.DataFrame(index=X.index)
-
-def make_ema(X: pd.DataFrame, spans: Iterable[int]) -> pd.DataFrame:
-    spans = sorted({int(s) for s in spans if int(s) >= 1})
-    parts = []
-    for s in spans:
-        df = X.ewm(span=s, adjust=False).mean().shift(1)
-        df.columns = [f"{c}_ema{s}" for c in X.columns]
-        parts.append(df)
-    return pd.concat(parts, axis=1) if parts else pd.DataFrame(index=X.index)
-
-# ---- external blocks (tsfresh, Foundational Model stack) ----
-
-_EXT_CACHE = {}
-
-# tsforecast/features/engineering.py
-def _load_ext_features(path: str) -> pd.DataFrame:
-    if path in _EXT_CACHE:
-        return _EXT_CACHE[path]
-    if not os.path.exists(path):
-        raise FileNotFoundError(path)
-
-    if os.path.isdir(path):
-        import glob, pyarrow.parquet as pq
-        dfs = []
-        for fp in sorted(glob.glob(os.path.join(path, "*.parquet"))):
-            try:
-                dfs.append(pd.read_parquet(fp))
-            except Exception:
-                # Fallback mit erhöhten Limits
-                tbl = pq.read_table(
-                    fp,
-                    thrift_string_size_limit=1 << 31,
-                    thrift_container_size_limit=1 << 31,
-                )
-                dfs.append(tbl.to_pandas())
-        df = pd.concat(dfs, axis=1) if dfs else pd.DataFrame()
-
-    elif path.endswith(".parquet"):
-        try:
-            df = pd.read_parquet(path)
-        except Exception:
-            import pyarrow.parquet as pq
-            tbl = pq.read_table(
-                path,
-                thrift_string_size_limit=1 << 31,
-                thrift_container_size_limit=1 << 31,
-            )
-            df = tbl.to_pandas()
-    else:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
-
-    _EXT_CACHE[path] = df
-    return df
-
-
-def _maybe_merge_external_blocks(M: pd.DataFrame, X_index, fe_spec: dict) -> pd.DataFrame:
-    # tsfresh precomputed features
-    tsf_path = fe_spec.get("tsfresh_path") if isinstance(fe_spec, dict) else None
-    if tsf_path:
-        F = _load_ext_features(tsf_path)
-        F = F.reindex(X_index).shift(1)  # safety
-        M = pd.concat([M, F], axis=1)
-    # Foundational model predictions as feature(s)
-    fm_path = fe_spec.get("fm_pred_path") if isinstance(fe_spec, dict) else None
-    if fm_path:
-        S = _load_ext_features(fm_path)
-        S = S.reindex(X_index).shift(1)
-        M = pd.concat([M, S], axis=1)
-    return M
-
-# ---- master builders ----
-
-def build_engineered_matrix(X: pd.DataFrame, base_features: Iterable[str], fe_spec: Dict) -> pd.DataFrame:
-    parts = []
-    if "lag_map" in fe_spec and fe_spec["lag_map"]:
-        parts.append(apply_per_feature_lags(X[base_features], fe_spec["lag_map"]))
-    else:
-        parts.append(make_global_lags(X[base_features], fe_spec.get("lags", [])))
-
-    parts.append(make_rolling_means(X[base_features], fe_spec.get("rm_windows", [])))
-    parts.append(make_ema(X[base_features], fe_spec.get("ema_spans", [])))
-
-    M = pd.concat([p for p in parts if p is not None and p.shape[1] > 0], axis=1) if parts else pd.DataFrame(index=X.index)
-    # merge in external blocks if provided
-    M = _maybe_merge_external_blocks(M, X.index, fe_spec)
-    return M
-
-def apply_pca_train_transform(M_train: pd.DataFrame, M_eval: pd.DataFrame, pca_n: Optional[int], pca_var: Optional[float]) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Standardize -> PCA (fit on Train) -> transform Train/Eval. If both None, passthrough."""
+def apply_pca_train_transform(
+    M_train: pd.DataFrame,
+    M_eval: pd.DataFrame,
+    pca_n: Optional[int],
+    pca_var: Optional[float],
+    pca_solver: str = "auto"
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Standardize -> PCA (fit on Train) -> Transform Train/Eval.
+    Hinweis: Bei pca_var erzwingt sklearn intern 'full'. Für int pca_n kann 'randomized' sinnvoll sein.
+    """
     if (pca_n is None) and (pca_var is None):
         return M_train.copy(), M_eval.copy()
 
+    # numerische Spalten
+    cols = list(M_train.columns)
     scaler = StandardScaler()
     Ztr = scaler.fit_transform(M_train.values)
     Zev = scaler.transform(M_eval.values)
 
-    pca = PCA(n_components=pca_var, svd_solver="full") if (pca_var is not None) else PCA(n_components=pca_n)
+    if pca_var is not None:
+        n_comp = float(pca_var)
+        solver = "full"
+    else:
+        n_comp = int(pca_n)
+        solver = pca_solver if pca_solver in {"auto", "full", "randomized"} else "auto"
+
+    pca = PCA(n_components=n_comp, svd_solver=solver)
     Ztr_p = pca.fit_transform(Ztr)
     Zev_p = pca.transform(Zev)
 
-    cols = [f"PC{i+1}" for i in range(Ztr_p.shape[1])]
-    Mtr_p = pd.DataFrame(Ztr_p, index=M_train.index, columns=cols)
-    Mev_p = pd.DataFrame(Zev_p, index=M_eval.index, columns=cols)
+    pc_cols = [f"PC{i+1}" for i in range(Ztr_p.shape[1])]
+    Mtr_p = pd.DataFrame(Ztr_p, index=M_train.index, columns=pc_cols).astype(np.float32)
+    Mev_p = pd.DataFrame(Zev_p, index=M_eval.index, columns=pc_cols).astype(np.float32)
     return Mtr_p, Mev_p

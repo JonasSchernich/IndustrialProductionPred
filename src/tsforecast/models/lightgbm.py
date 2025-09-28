@@ -1,35 +1,39 @@
-# lightgbm.py
 from __future__ import annotations
 from typing import Dict, Any
-try:
-    from lightgbm import LGBMRegressor
-except Exception as e:
-    LGBMRegressor = None
-    _LGBM_IMPORT_ERROR = e
 
-def make_lightgbm(params: Dict[str, Any]):
-    if LGBMRegressor is None:
-        raise ImportError(f"lightgbm is not installed: {_LGBM_IMPORT_ERROR}")
-    p = dict(params)
-    use_gpu = bool(p.pop("use_gpu", False))
+def _default_params() -> Dict[str, Any]:
+    return dict(
+        n_estimators=600,
+        learning_rate=0.05,
+        max_depth=-1,
+        num_leaves=63,
+        min_child_samples=20,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_alpha=0.0,
+        reg_lambda=1.0,
+        n_jobs=-1,
+        random_state=42,
+        verbose=-1,
+        # device/device_type werden unten gemappt
+    )
 
-    # sinnvolle Defaults
-    p.setdefault("n_estimators", 800)
-    p.setdefault("learning_rate", 0.05)
-    p.setdefault("num_leaves", 31)
-    p.setdefault("min_data_in_leaf", 20)
-    p.setdefault("subsample", 0.8)           # bagging_fraction
-    p.setdefault("colsample_bytree", 0.8)    # feature_fraction
-    p.setdefault("lambda_l2", 1.0)
-    p.setdefault("objective", "regression")
-    p.setdefault("random_state", 42)
-    p.setdefault("n_jobs", -1)
-    p.setdefault("verbosity", -1)
-    # optional stabilisierend:
-    p.setdefault("bagging_freq", 1)
-    # p.setdefault("min_gain_to_split", 0.0) # default ok
+def build_estimator(params: Dict[str, Any]):
+    try:
+        import lightgbm as lgb
+    except Exception as e:
+        raise ImportError("lightgbm ist nicht installiert") from e
 
-    if use_gpu:
-        p["device"] = "gpu"   # GPU-Build nötig
+    p = _default_params()
+    p.update({k: v for k, v in (params or {}).items() if v is not None})
 
-    return LGBMRegressor(**p)
+    # GPU mapping (wir unterstützen beides: device='gpu' und device_type)
+    device = str(p.pop("device", "")).lower()
+    device_type = str(p.pop("device_type", "")).lower()
+    if device == "gpu" or device_type == "gpu" or p.get("use_gpu", False):
+        p["device_type"] = "gpu"  # LightGBM akzeptiert 'device_type' (>=v3), ältere akzeptieren 'device'
+        p.setdefault("device", "gpu")  # harmless fallback
+
+    # LGBMRegressor akzeptiert eval_set/early_stopping_rounds
+    est = lgb.LGBMRegressor(**p)
+    return est

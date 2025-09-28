@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Dict, Any
 import numpy as np
 
 class TabPFNEstimator:
@@ -7,7 +8,7 @@ class TabPFNEstimator:
             from tabpfn import TabPFNRegressor  # noqa: F401
         except Exception as e:
             raise ImportError("pip install tabpfn") from e
-        self._params = params
+        self._params = dict(params)
         self._reg = None
 
     def fit(self, X, y):
@@ -25,5 +26,8 @@ class TabPFNEstimator:
         return self
 
     def predict(self, X):
-        import numpy as np
         return self._reg.predict(np.asarray(X))
+
+def build_estimator(params: Dict[str, Any]):
+    """Registry-Factory Hook."""
+    return TabPFNEstimator(**(params or {}))

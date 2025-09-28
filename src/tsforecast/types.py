@@ -82,7 +82,25 @@ class AshaCfg:
     promote_frac_2: float = 0.3333
     seed: Optional[int] = 42
 
-# Ensemble (placeholder for later stacking)
+# Local Bayesian Optimization (leichtgewichtig)
+@dataclass
+class BOCfg:
+    """
+    use_bo: enable local BO (around best point)
+    hp_keys: list of hyperparameter names to tune locally (e.g., ["num_leaves","min_child_samples","reg_lambda"])
+    n_iter: number of local proposals
+    steps: rolling steps used for evaluation during BO (typ. = ASHA B2)
+    radius: neighborhood radius (fraction for floats, absolute for ints)
+    seed: RNG seed
+    """
+    use_bo: bool = False
+    hp_keys: Tuple[str, ...] = ()
+    n_iter: int = 20
+    steps: int = 150
+    radius: float = 0.25
+    seed: Optional[int] = 17
+
+# Ensemble (placeholder)
 @dataclass
 class EnsembleCfg:
     use_weighted_mean: bool = False
