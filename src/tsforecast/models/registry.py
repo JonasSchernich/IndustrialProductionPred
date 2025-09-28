@@ -1,83 +1,43 @@
 from __future__ import annotations
-from typing import Dict, Any, Callable
+from typing import Dict, Any
 
-def _lower(s: str) -> str:
-    return s.strip().lower().replace(" ", "").replace("_", "")
+# Falls bei dir schon vorhanden: build_estimator import behalten
+from .xgboost import build_estimator as build_xgb  # optional guard in deiner Struktur
+try:
+    from .lightgbm import build_estimator as build_lgbm
+except Exception:
+    build_lgbm = None
+from .baselines import build_estimator as build_baselines  # falls vorhanden
+# ... weitere Modelle importieren wie in deinem Projekt üblich
 
-def _make_elasticnet(params: Dict[str, Any]):
-    from .elasticnet import make_elasticnet
-    return make_elasticnet(params)
+# Einheitlicher Entry-Point
+def build_estimator(model_name: str, params: Dict[str, Any]):
+    name = model_name.lower()
+    if name in ("xgb", "xgboost"):
+        return build_xgb(params)
+    if name in ("lgbm", "lightgbm"):
+        if build_lgbm is None:
+            raise ImportError("LightGBM not available")
+        return build_lgbm(params)
+    # Baselines (rw, mean, ar1 etc.)
+    return build_baselines(model_name, params)
 
-def _make_random_forest(params: Dict[str, Any]):
-    try:
-        from .random_forest import make_random_forest
-    except Exception as e:
-        raise ImportError("random_forest nicht verfügbar (scikit-learn?)") from e
-    return make_random_forest(params)
-
-def _make_xgboost(params: Dict[str, Any]):
-    try:
-        from .xgboost import make_xgboost
-    except Exception as e:
-        raise ImportError("xgboost nicht verfügbar (pip install xgboost)") from e
-    return make_xgboost(params)
-
-def _make_lightgbm(params: Dict[str, Any]):
-    try:
-        from .lightgbm import make_lightgbm
-    except Exception as e:
-        raise ImportError("lightgbm nicht verfügbar (pip install lightgbm)") from e
-    return make_lightgbm(params)
-
-def _make_mean(params: Dict[str, Any]):
-    from .baselines import MeanModel
-    return MeanModel(**params)
-
-def _make_randomwalk(params: Dict[str, Any]):
-    from .baselines import RandomWalkModel
-    return RandomWalkModel(**params)
-
-def _make_ar1(params: Dict[str, Any]):
-    from .baselines import AR1Model
-    return AR1Model(**params)
-
-def _make_tabpfn(params: Dict[str, Any]):
-    try:
-        from .tabpfn import TabPFNEstimator
-    except Exception as e:
-        raise ImportError("TabPFN nicht verfügbar (pip install tabpfn)") from e
-    return TabPFNEstimator(**params)
-
-def _make_chronos(params: Dict[str, Any]):
-    try:
-        from .chronos import ChronosRegressor
-    except Exception as e:
-        raise ImportError("Chronos nicht verfügbar (pip install chronos-forecasting torch)") from e
-    return ChronosRegressor(**params)
-
-_REGISTRY: Dict[str, Callable[[Dict[str, Any]], Any]] = {
-    "elasticnet": _make_elasticnet,
-    "randomforest": _make_random_forest,
-    "rf": _make_random_forest,
-    "xgboost": _make_xgboost,
-    "xgb": _make_xgboost,
-    "lightgbm": _make_lightgbm,
-    "lgbm": _make_lightgbm,
-    "mean": _make_mean,
-    "avg": _make_mean,
-    "average": _make_mean,
-    "randomwalk": _make_randomwalk,
-    "rw": _make_randomwalk,
-    "ar1": _make_ar1,
-    "tabpfn": _make_tabpfn,
-    "chronos": _make_chronos,
-    "naive": _make_randomwalk,
-    "ar(1)": _make_ar1,
+# Fähigkeiten (minimal)
+MODEL_CAPS: Dict[str, Dict[str, bool]] = {
+    "xgb": {"supports_es": True},
+    "xgboost": {"supports_es": True},
+    "lgbm": {"supports_es": True},
+    "lightgbm": {"supports_es": True},
+    "mean": {"supports_es": False},
+    "avg": {"supports_es": False},
+    "average": {"supports_es": False},
+    "randomwalk": {"supports_es": False},
+    "rw": {"supports_es": False},
+    "naive": {"supports_es": False},
+    "ar1": {"supports_es": False},
+    "ar(1)": {"supports_es": False},
+    # ergänze weitere Modelle bei Bedarf
 }
 
-def build_estimator(model_name: str, params: Dict[str, Any]):
-    key = _lower(model_name)
-    if key not in _REGISTRY:
-        available = ", ".join(sorted(_REGISTRY.keys()))
-        raise ValueError(f"Unbekanntes Modell '{model_name}'. Verfügbar: {available}")
-    return _REGISTRY[key](params or {})
+def supports_es(model_name: str) -> bool:
+    return MODEL_CAPS.get(model_name.lower(), {}).get("supports_es", False)

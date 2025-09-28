@@ -4,11 +4,15 @@ import numpy as np
 import pandas as pd
 from ..types import FeatureSelectCfg
 
+# selection.py
 def _variance_filter(X: pd.DataFrame, thresh: float) -> pd.DataFrame:
-    if thresh <= 0:
-        return X
     variances = X.var(axis=0)
-    return X.loc[:, variances > thresh]
+    if thresh <= 0:
+        keep = variances > 0.0
+    else:
+        keep = variances > float(thresh)
+    return X.loc[:, keep]
+
 
 def select_features(Xtr: pd.DataFrame, ytr: pd.Series, cfg: FeatureSelectCfg) -> List[str]:
     """(Legacy) Selection on BASE features (kept for compatibility in other scripts)."""
