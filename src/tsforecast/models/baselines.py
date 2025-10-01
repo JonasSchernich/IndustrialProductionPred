@@ -1,8 +1,14 @@
-
 from __future__ import annotations
 from typing import Optional
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
+
+def _len_like(X) -> int:
+    try:
+        # pandas/numpy DataFrame/ndarray
+        return int(getattr(X, "shape", [len(X)])[0])
+    except Exception:
+        return 1
 
 class MeanModel(BaseEstimator, RegressorMixin):
     def __init__(self):
@@ -14,13 +20,12 @@ class MeanModel(BaseEstimator, RegressorMixin):
         self.mean_ = float(np.nanmean(y))
         return self
     def predict(self, X):
-        n = getattr(X, 'shape', [len(X)])[0]
+        n = _len_like(X)
         return np.full(n, self.mean_, dtype=float)
 
 class RandomWalkModel(BaseEstimator, RegressorMixin):
     def __init__(self):
         self.last_: Optional[float] = None
-    # baselines.py
     def fit(self, X, y):
         y = np.asarray(y, dtype=float)
         valid = y[np.isfinite(y)]
@@ -28,9 +33,8 @@ class RandomWalkModel(BaseEstimator, RegressorMixin):
             raise ValueError("y has no finite values")
         self.last_ = float(valid[-1])
         return self
-
     def predict(self, X):
-        n = getattr(X, 'shape', [len(X)])[0]
+        n = _len_like(X)
         return np.full(n, self.last_, dtype=float)
 
 class AR1Model(BaseEstimator, RegressorMixin):
@@ -40,9 +44,7 @@ class AR1Model(BaseEstimator, RegressorMixin):
         self.intercept_: float = 0.0
         self.y_last_: Optional[float] = None
     def fit(self, X, y):
-        # in baselines.AR1Model.fit(self, X, y)
         y = np.asarray(y, dtype=float)
-        # gültige Nachbarpaare
         y0, y1 = y[:-1], y[1:]
         mask = np.isfinite(y0) & np.isfinite(y1)
         y0, y1 = y0[mask], y1[mask]
@@ -56,12 +58,10 @@ class AR1Model(BaseEstimator, RegressorMixin):
             Xmat = y0.reshape(-1, 1)
             beta, *_ = np.linalg.lstsq(Xmat, y1, rcond=None)
             self.intercept_, self.coef_ = 0.0, float(beta[0])
-        # letzte gültige y
-        valid = np.asarray(y[np.isfinite(y)], dtype=float)
+        valid = y[np.isfinite(y)]
         self.y_last_ = float(valid[-1])
         return self
-
     def predict(self, X):
-        n = getattr(X, 'shape', [len(X)])[0]
+        n = _len_like(X)
         yhat1 = self.intercept_ + (self.coef_ * self.y_last_)
         return np.full(n, yhat1, dtype=float)

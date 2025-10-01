@@ -70,22 +70,25 @@ def _shift_all_cols(M: pd.DataFrame, k: int = 1) -> pd.DataFrame:
     return M.shift(k)
 
 def _merge_external_blocks(X: pd.DataFrame, fe_spec: Dict) -> pd.DataFrame:
-    M = X
-    # tsfresh
+    # nur externe, strikt geshiftete Features; kein X beilegen
+    M = pd.DataFrame(index=X.index)
+
     tsfresh_path = fe_spec.get("tsfresh_path")
     if tsfresh_path:
         T = _load_parquet_safe(tsfresh_path)
-        T = T.reindex(X.index).copy()
+        T = T.reindex(X.index)
         T = _shift_all_cols(T, 1)
         M = M.join(T, how="left")
-    # foundation model 1-step preds
+
     fm_pred_path = fe_spec.get("fm_pred_path")
     if fm_pred_path:
         F = _load_parquet_safe(fm_pred_path)
-        F = F.reindex(X.index).copy()
+        F = F.reindex(X.index)
         F = _shift_all_cols(F, 1)
         M = M.join(F, how="left")
-    return M
+
+    return _cast_float32(M)
+
 
 def _cast_float32(M: pd.DataFrame) -> pd.DataFrame:
     # nur numerische Spalten auf float32
