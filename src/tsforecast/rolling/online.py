@@ -558,8 +558,13 @@ def online_rolling_forecast(
     _notify(progress, progress_fn, "done", {"n_preds": len(preds)})
 
     if report_csv_path is not None and len(preds) > 0:
-        y_true = truths.values.astype(float)
-        y_hat = preds.values.astype(float)
+        # Seed-OOS auswertungsfrei
+        preds_eval = preds.iloc[1:] if len(preds) > 1 else preds.iloc[:0]
+        truths_eval = truths.loc[preds_eval.index]
+
+        y_true = truths_eval.values.astype(float)
+        y_hat = preds_eval.values.astype(float)
+
         final_rmse = _rmse(y_true, y_hat)
         final_mae = _mae(y_true, y_hat)
         row = {

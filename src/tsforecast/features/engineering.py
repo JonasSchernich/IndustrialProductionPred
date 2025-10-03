@@ -17,20 +17,52 @@ def make_global_lags(X: pd.DataFrame, lags: Iterable[int]) -> pd.DataFrame:
 def make_per_feature_lags_by_corr(
     Xtr: pd.DataFrame,
     ytr: pd.Series,
-    candidates: Iterable[int],
+    candidates,
     topk: int = 1
-) -> Dict[str, List[int]]:
-    # wähle pro Basisfeature die Lags mit größter |corr| (Train)
-    cand = [int(l) for l in candidates if int(l) > 0]
-    corr_map = {}
+) -> dict:
+    """
+    Wählt je Basisfeature die Lags mit maximaler |corr(X.shift(L), y)|,
+    berechnet auf dem Trainingsfenster in exakt der finalen Ausrichtung.
+    Kein zusätzlicher shift(1) für Lags – der gilt nur für Smoother/extern.
+    """
+    # Kandidaten normalisieren (unterstützt int-Iterables oder Tuple von Sets)
+    if candidates is None:
+        cand = [1, 2, 3, 6, 12]
+    elif isinstance(candidates, (list, tuple)) and len(candidates) > 0 and isinstance(candidates[0], (list, tuple, set)):
+        # mehrere Sets -> vereinigen
+        s = set()
+        for block in candidates:
+            s.update(int(l) for l in block)
+        cand = sorted(x for x in s if x > 0)
+    else:
+        cand = sorted({int(l) for l in candidates if int(l) > 0})
+
+    lag_map = {}
+    yv = ytr.astype(float)
+
     for c in Xtr.columns:
-        vals = {}
+        x = Xtr[c].astype(float)
+        stats = []
         for L in cand:
-            s = Xtr[c].shift(L)
-            vals[L] = abs(s.corr(ytr))
-        best = sorted(vals.items(), key=lambda kv: (-(0.0 if np.isnan(kv[1]) else kv[1]), kv[0]))[: max(1, int(topk))]
-        corr_map[c] = [b[0] for b in best]
-    return corr_map
+            s = x.shift(L)  # final genutzte Ausrichtung für h=1
+            z = pd.concat([s, yv], axis=1).dropna()
+            if len(z) < 8:  # zu wenig Beobachtungen? überspringen
+                continue
+            r = z.iloc[:, 0].corr(z.iloc[:, 1])
+            if pd.isna(r):
+                continue
+            stats.append((abs(float(r)), L))
+
+        if not stats:
+            continue
+
+        # nach |corr| sortieren und Top-k Lags behalten
+        stats.sort(key=lambda t: t[0], reverse=True)
+        chosen = [L for _, L in stats[:max(1, int(topk))]]
+        lag_map[c] = chosen
+
+    return lag_map
+
 
 def apply_per_feature_lags(X: pd.DataFrame, lag_map: Dict[str, List[int]]) -> pd.DataFrame:
     out = {}

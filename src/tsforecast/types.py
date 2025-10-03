@@ -6,17 +6,28 @@ from typing import List, Optional, Tuple
 @dataclass
 class FeatureSelectCfg:
     """
-    mode: "manual" | "auto_topk" | "auto_threshold" | "none"
+    mode: "manual" | "auto_topk" | "auto_threshold" | "none" |
+          "auto_topk_prewhite" | "auto_threshold_prewhite"
     manual_cols: engineered column names to keep
-    topk: used when mode='auto_topk'
-    min_abs_corr: used when mode='auto_threshold'
-    variance_thresh: drop columns with variance <= threshold (0.0 drops constant cols)
+    topk: used when mode='auto_topk*'
+    min_abs_corr: used when mode='auto_threshold*'
+    variance_thresh: drop columns with variance <= threshold
+    prewhiten: residualize X and y by nuisance terms (month dummies, y-lags)
+    use_month_dummies: include month dummies in nuisance
+    use_y_lags: include y_{t-1}, y_{t-12} in nuisance
+    redundancy_tau: greedy redundancy filter threshold on |corr| among selected features
+    sis_whitelist_path: optional path to a feature whitelist (list/CSV/JSON) from a SIS-ΔRMSE precheck
     """
     mode: str = "auto_topk"
     manual_cols: Optional[List[str]] = None
     topk: int = 200
-    min_abs_corr: float = 0.2
+    min_abs_corr: float = 0.0
     variance_thresh: float = 0.0
+    prewhiten: bool = False
+    use_month_dummies: bool = True
+    use_y_lags: bool = True
+    redundancy_tau: float = 0.0
+    sis_whitelist_path: Optional[str] = None
 
 # Feature Engineering
 @dataclass
