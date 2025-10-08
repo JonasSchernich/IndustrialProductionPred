@@ -57,16 +57,10 @@ def _summarize_fe_spec(fe_spec: Dict) -> Dict:
         "fm_on": bool(fe_spec.get("fm_pred_path")),
     }
 
-# --------- FE/PCA/FS caching helpers ---------
-def _digest_lag_map(lag_map: Optional[dict]) -> str:
-    if not isinstance(lag_map, dict):
+def _digest_lag_map(lm: Optional[Dict[str, List[int]]]) -> str:
+    if not lm:
         return ""
-    # kompakter, deterministischer Fingerabdruck
-    items = sorted(
-        (str(k), tuple(sorted(map(int, v)))) for k, v in lag_map.items()
-        if isinstance(v, (list, tuple))
-    )
-    payload = json.dumps(items, separators=(",", ":"), ensure_ascii=False)
+    payload = "|".join(f"{k}:{','.join(map(str, sorted(v)))}" for k, v in sorted(lm.items()))
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 def _cache_key(t: int, base_features: List[str], fe_spec: Dict, fs_cfg: FeatureSelectCfg) -> str:
@@ -94,7 +88,6 @@ def _cache_key(t: int, base_features: List[str], fe_spec: Dict, fs_cfg: FeatureS
     bf_d = hashlib.md5(("|".join(map(str, base_features))).encode("utf-8")).hexdigest()
     payload = {"t": int(t), "fe": fe, "fs": fs, "bf": bf_d}
     return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
-# ---------------------------------------------
 
 def score_config_for_next_step(
     X: pd.DataFrame, y: pd.Series, t: int,
@@ -104,7 +97,6 @@ def score_config_for_next_step(
     train_eval_cfg: Optional[TrainEvalCfg] = None,
     design_cache: Optional[Dict[str, Tuple[pd.DataFrame, pd.Series, pd.DataFrame, List[str]]]] = None
 ) -> Tuple[float, float, Optional[List[str]], Dict]:
-    # Baselines
     if model_name.lower() in BASELINE_MODELS:
         ytr = y.iloc[:t+1]
         est = build_estimator(model_name, dict(model_params))
@@ -234,7 +226,6 @@ def _eval_over_steps(
     metric_fn, train_eval_cfg: Optional[TrainEvalCfg],
     t_start: int, steps: int, step_incr: int
 ) -> float:
-    # (kein globales Caching – t variiert ständig; hier bringt es wenig)
     scores = []
     n = len(y)
     end_t = min(t_start + steps - 1, n - 2)
@@ -311,6 +302,50 @@ def _local_bo_refine(
 
     return {"score": best_sc, "model_params": best_params}
 
+# ----- Inneres, zeitbewusstes CV (Blöcke ≤ t_end) -----
+
+def _make_inner_cv_blocks(t_end_1based: int, block_len: int, n_blocks: int) -> List[Tuple[int,int]]:
+    blocks = []
+    end = int(t_end_1based)
+    for i in range(1, int(n_blocks) + 1):
+        b_end = end - (int(n_blocks) - i) * int(block_len)
+        b_start = b_end - int(block_len) + 1
+        blocks.append((b_start, b_end))
+    return blocks
+
+def _eval_block(
+    X, y, base_features, fs_cfg, model_name, hp, fe_spec, metric_fn, train_eval_cfg,
+    val_start_1based: int, val_end_1based: int
+) -> List[float]:
+    scores = []
+    a = int(val_start_1based); b = int(val_end_1based)
+    for s_1based in range(a-1, b):  # s is train-end index (0-based), val is s+1
+        try:
+            sc, _, _, _ = score_config_for_next_step(
+                X, y, s_1based, base_features, fe_spec, fs_cfg, model_name, hp, metric_fn, train_eval_cfg,
+                design_cache=None
+            )
+            scores.append(sc)
+        except Exception:
+            continue
+    return scores
+
+def _eval_over_inner_cv_blocks_one(
+    X, y, base_features, fs_cfg, model_name, hp, fe_spec, metric_fn, train_eval_cfg,
+    blocks: List[Tuple[int,int]], agg: str = "median"
+) -> Tuple[float, List[float]]:
+    per_block_stats = []
+    for (a, b) in blocks:
+        scs = _eval_block(X, y, base_features, fs_cfg, model_name, hp, fe_spec, metric_fn, train_eval_cfg, a, b)
+        if not scs:
+            per_block_stats.append(float("inf"))
+        else:
+            per_block_stats.append(float(np.median(scs)) if agg == "median" else float(np.mean(scs)))
+    overall = float(np.median(per_block_stats)) if agg == "median" else float(np.mean(per_block_stats))
+    return overall, per_block_stats
+
+# ----- Hauptorchestrierung -----
+
 def online_rolling_forecast(
     X: pd.DataFrame, y: pd.Series,
     initial_window: int, step: int, horizon: int,
@@ -324,26 +359,24 @@ def online_rolling_forecast(
     report_csv_path: Optional[str] = None,
     tuning_csv_path: Optional[str] = None,
     predictions_csv_path: Optional[str] = None,
-    min_rel_improvement: float = 0.0   # z.B. 0.03 => wechsle nur, wenn ≥3% besser
+    min_rel_improvement: float = 0.0,
+    inner_cv_cfg: Optional[Dict] = None   # {"use_inner_cv":bool,"block_len":int,"n_blocks":int,"aggregate":"median|mean","use_mean_rank":bool}
 ):
     if horizon != 1:
         raise NotImplementedError("Aktuell nur horizon=1.")
 
     base_features0 = list(X.columns)
-    start_t = initial_window - 1
+    start_t = initial_window - 1  # 0-based; z.B. 239 für initial_window=240
 
-    # initiale FE-Kandidaten
     Xtr0, ytr0 = X.iloc[:start_t+1, :], y.iloc[:start_t+1]
     fe_candidates_init = _fe_candidates_from_cfg(Xtr0, ytr0, base_features0, fe_cfg)
 
-    # HP-Grid
     hp_list = list(expand_grid(model_grid))
     n_hp = len(hp_list)
     n_fe_init = len(fe_candidates_init)
     init_evals = _count_evals(n_hp, n_fe_init, fe_cfg.optimize_fe_for_all_hp)
     _notify(progress, progress_fn, "init_start", {"n_hp": n_hp, "n_fe": n_fe_init, "expected_evals": init_evals})
 
-    # CSV-Buffer
     tuning_rows_buffer: List[Dict] = []
     pred_rows_buffer: List[Dict] = []
     def _push_tuning_row(row: Dict, flush: bool = False):
@@ -387,7 +420,7 @@ def online_rolling_forecast(
         }
         return row
 
-    # === ASHA optional ===
+    # === ASHA (Initialsuche) ===
     def _asha_initial_search():
         rng = np.random.RandomState(None if asha_cfg.seed is None else int(asha_cfg.seed))
 
@@ -398,41 +431,79 @@ def online_rolling_forecast(
             idx = rng.choice(len(pairs), size=int(n), replace=False)
             return [pairs[i] for i in idx]
 
-        def _stage(pairs, steps, tag):
-            best = []
-            for i, (hp, fe) in enumerate(pairs, start=1):
-                try:
-                    sc = _eval_over_steps(X, y, base_features0, fs_cfg, model_name, hp, fe, metric_fn, train_eval_cfg, start_t, steps, step)
-                    best.append((sc, hp, fe))
-                    _push_tuning_row(_row_common(stage=tag, phase="asha", t=start_t, hp=hp, fe_spec=fe, score=sc, status="ok", err=None))
-                except Exception as e:
-                    _push_tuning_row(_row_common(stage=tag, phase="asha", t=start_t, hp=hp, fe_spec=fe, score=None, status="failed", err=str(e)))
-                    continue
-            best.sort(key=lambda x: x[0])
-            return best
+        # Inner-CV Blöcke auf t_end = start_t+1 (1-based)
+        use_icv = bool(inner_cv_cfg and inner_cv_cfg.get("use_inner_cv", False))
+        icv_block_len = int(inner_cv_cfg.get("block_len", 20)) if use_icv else None
+        icv_n_blocks = int(inner_cv_cfg.get("n_blocks", 3)) if use_icv else None
+        icv_agg = str(inner_cv_cfg.get("aggregate", "median")) if use_icv else "median"
+        icv_mean_rank = bool(inner_cv_cfg.get("use_mean_rank", True)) if use_icv else False
+        blocks_all = _make_inner_cv_blocks(start_t + 1, icv_block_len, icv_n_blocks) if use_icv else None
 
-        res1 = _stage(_sample_pairs(int(asha_cfg.n_b1)), int(asha_cfg.steps_b1), "B1")
+        def _stage(pairs, budget, tag):
+            best_rows = []
+            if use_icv:
+                # budget = Anzahl genutzter Blöcke (1/2/3)
+                blocks = blocks_all[:int(budget)]
+                for (hp, fe) in pairs:
+                    try:
+                        sc, per_b = _eval_over_inner_cv_blocks_one(
+                            X, y, base_features0, fs_cfg, model_name, hp, fe, metric_fn, train_eval_cfg,
+                            blocks=blocks, agg=icv_agg
+                        )
+                        best_rows.append({"score": sc, "hp": hp, "fe": fe, "per_block": per_b})
+                        _push_tuning_row(_row_common(stage=tag, phase="asha", t=start_t, hp=hp, fe_spec=fe, score=sc, status="ok", err=None))
+                    except Exception as e:
+                        _push_tuning_row(_row_common(stage=tag, phase="asha", t=start_t, hp=hp, fe_spec=fe, score=None, status="failed", err=str(e)))
+                        continue
+                if icv_mean_rank and best_rows:
+                    B = len(blocks)
+                    ranks = np.zeros(len(best_rows), dtype=float)
+                    for b in range(B):
+                        vals = [r["per_block"][b] for r in best_rows]
+                        order = np.argsort(vals)
+                        rk = np.empty_like(order, dtype=float)
+                        rk[order] = np.arange(len(vals)) + 1
+                        ranks += rk
+                    mean_ranks = ranks / float(B)
+                    rows = [{"score": float(mean_ranks[i]), "hp": best_rows[i]["hp"], "fe": best_rows[i]["fe"]} for i in range(len(best_rows))]
+                    rows.sort(key=lambda z: z["score"])
+                    return rows
+                else:
+                    rows = [{"score": float(r["score"]), "hp": r["hp"], "fe": r["fe"]} for r in best_rows]
+                    rows.sort(key=lambda z: z["score"])
+                    return rows
+            else:
+                # klassische Steps
+                rows = []
+                for (hp, fe) in pairs:
+                    try:
+                        sc = _eval_over_steps(X, y, base_features0, fs_cfg, model_name, hp, fe, metric_fn, train_eval_cfg, start_t, int(budget), step)
+                        rows.append({"score": sc, "hp": hp, "fe": fe})
+                        _push_tuning_row(_row_common(stage=tag, phase="asha", t=start_t, hp=hp, fe_spec=fe, score=sc, status="ok", err=None))
+                    except Exception as e:
+                        _push_tuning_row(_row_common(stage=tag, phase="asha", t=start_t, hp=hp, fe_spec=fe, score=None, status="failed", err=str(e)))
+                        continue
+                rows.sort(key=lambda z: z["score"])
+                return rows
+
+        # Budget: bei Inner-CV = 1/2/3 Blöcke; sonst = steps_b1/b2/b3
+        b1 = (1 if use_icv else int(asha_cfg.steps_b1))
+        b2 = (2 if use_icv else int(asha_cfg.steps_b2))
+        b3 = (3 if use_icv else int(asha_cfg.steps_b3))
+
+        res1 = _stage(_sample_pairs(int(asha_cfg.n_b1)), b1, "B1")
         k1 = max(1, int(len(res1) * float(asha_cfg.promote_frac_1)))
-        top1 = res1[:k1]
-        pairs2 = [(hp, fe) for _, hp, fe in top1]
-        if len(pairs2) > int(asha_cfg.n_b2):
-            pairs2 = pairs2[: int(asha_cfg.n_b2)]
-        res2 = _stage(pairs2, int(asha_cfg.steps_b2), "B2")
+        res2 = _stage([(r["hp"], r["fe"]) for r in res1[:k1]], b2, "B2")
         k2 = max(1, int(len(res2) * float(asha_cfg.promote_frac_2)))
-        top2 = res2[:k2]
-        pairs3 = [(hp, fe) for _, hp, fe in top2]
-        if len(pairs3) > int(asha_cfg.n_b3):
-            pairs3 = pairs3[: int(asha_cfg.n_b3)]
-        res3 = _stage(pairs3, int(asha_cfg.steps_b3), "B3")
-        sc, hp, fe = res3[0]
-        return {"t": start_t, "fe_spec": fe, "model_params": hp, "score": sc, "yhat": None}
+        res3 = _stage([(r["hp"], r["fe"]) for r in res2[:k2]], b3, "B3")
+        top = res3[0]
+        return {"t": start_t, "fe_spec": top["fe"], "model_params": top["hp"], "score": top["score"], "yhat": None}
 
     if asha_cfg is not None and asha_cfg.use_asha:
         best_init = _asha_initial_search()
         _notify(progress, progress_fn, "init_done_asha", {"best_score": round(best_init["score"], 6)})
         _push_tuning_row({"phase":"asha","stage":"final_pick","t":int(start_t),"model":model_name,"score":best_init["score"],"status":"ok","err":"","hp":json.dumps(best_init["model_params"],sort_keys=True),**_summarize_fe_spec(best_init["fe_spec"]), "used_es":None,"best_iteration":None,"n_used_cols":None}, flush=True)
     else:
-        # klassische Vollsuche auf Startfenster – mit Caching
         design_cache_init: Dict[str, Tuple[pd.DataFrame, pd.Series, pd.DataFrame, List[str]]] = {}
         best_init, evals_done = None, 0
         for i_hp, mp in enumerate(hp_list, start=1):
@@ -483,7 +554,7 @@ def online_rolling_forecast(
         try:
             score_used, yhat, used_cols, used_fit_info = score_config_for_next_step(
                 X, y, t0, base_features0, prev_best["fe_spec"], fs_cfg, model_name, prev_best["model_params"], metric_fn, train_eval_cfg,
-                design_cache={}  # frische Cache-Instanz (nur für diese Konfiguration)
+                design_cache={}  # frisch
             )
             preds.append((y.index[t_pred], yhat))
             truths.append((y.index[t_pred], float(y.iloc[t_pred])))
@@ -512,30 +583,66 @@ def online_rolling_forecast(
             if lm is not None:
                 cached_lag_map = lm
 
-        # Suche nächste Best-Config (Fast/Full) – mit Caching pro t0
+        # Suche nächste Best-Config
         _notify(progress, progress_fn, "step_search_start", {"t": int(t0)})
         best_now = None
+
+        # Inner-CV Blöcke bis t0 (1-based = t0+1)
+        use_icv = bool(inner_cv_cfg and inner_cv_cfg.get("use_inner_cv", False))
+        if use_icv:
+            icv_block_len = int(inner_cv_cfg.get("block_len", 20))
+            icv_n_blocks = int(inner_cv_cfg.get("n_blocks", 3))
+            icv_agg = str(inner_cv_cfg.get("aggregate", "median"))
+            icv_mean_rank = bool(inner_cv_cfg.get("use_mean_rank", True))
+            blocks_t = _make_inner_cv_blocks(t0 + 1, icv_block_len, icv_n_blocks)
+
         design_cache_t: Dict[str, Tuple[pd.DataFrame, pd.Series, pd.DataFrame, List[str]]] = {}
+        rows_tmp = []
         for mp in hp_list:
             fe_list = fe_candidates if fe_cfg.optimize_fe_for_all_hp else [prev_best["fe_spec"]]
             for fe_spec in fe_list:
                 try:
-                    sc, yh, cand_used_cols, fit_info = score_config_for_next_step(
-                        X, y, t0, base_features0, fe_spec, fs_cfg, model_name, mp, metric_fn, train_eval_cfg,
-                        design_cache=design_cache_t
-                    )
-                    _push_tuning_row(_row_common(stage="search", phase="step", t=t0, hp=mp, fe_spec=fe_spec, score=sc, status="ok", err=None, fit_info=fit_info, used_cols=cand_used_cols))
+                    if use_icv:
+                        sc, per_b = _eval_over_inner_cv_blocks_one(
+                            X, y, base_features0, fs_cfg, model_name, mp, fe_spec, metric_fn, train_eval_cfg,
+                            blocks=blocks_t, agg=icv_agg
+                        )
+                        rows_tmp.append({"score": sc, "hp": mp, "fe": fe_spec, "per_block": per_b})
+                        _push_tuning_row(_row_common(stage="search", phase="step", t=t0, hp=mp, fe_spec=fe_spec, score=sc, status="ok", err=None))
+                    else:
+                        sc, yh, cand_used_cols, fit_info = score_config_for_next_step(
+                            X, y, t0, base_features0, fe_spec, fs_cfg, model_name, mp, metric_fn, train_eval_cfg,
+                            design_cache=design_cache_t
+                        )
+                        rows_tmp.append({"score": sc, "hp": mp, "fe": fe_spec})
+                        _push_tuning_row(_row_common(stage="search", phase="step", t=t0, hp=mp, fe_spec=fe_spec, score=sc, status="ok", err=None, fit_info=fit_info, used_cols=cand_used_cols))
                 except Exception as e:
                     _push_tuning_row(_row_common(stage="search", phase="step", t=t0, hp=mp, fe_spec=fe_spec, score=None, status="failed", err=str(e)))
                     continue
-                cand = {"t": t0, "fe_spec": fe_spec, "model_params": mp, "score": sc, "yhat": yh, "fit_info": fit_info}
-                if (best_now is None) or (sc < best_now["score"]):
-                    best_now = cand
-        if best_now is None:
+
+        if not rows_tmp:
             raise RuntimeError(f"No valid candidate at step t={t0}")
+
+        if use_icv and icv_mean_rank:
+            # mean rank über Blöcke
+            B = len(blocks_t)
+            ranks = np.zeros(len(rows_tmp), dtype=float)
+            for b in range(B):
+                vals = [r["per_block"][b] for r in rows_tmp]
+                order = np.argsort(vals)
+                rk = np.empty_like(order, dtype=float)
+                rk[order] = np.arange(len(vals)) + 1
+                ranks += rk
+            mean_ranks = ranks / float(B)
+            best_idx = int(np.argmin(mean_ranks))
+            best_now = {"t": t0, "fe_spec": rows_tmp[best_idx]["fe"], "model_params": rows_tmp[best_idx]["hp"], "score": float(mean_ranks[best_idx]), "yhat": None, "fit_info": {}}
+        else:
+            rows_tmp.sort(key=lambda r: r["score"])
+            best_now = {"t": t0, "fe_spec": rows_tmp[0]["fe"], "model_params": rows_tmp[0]["hp"], "score": float(rows_tmp[0]["score"]), "yhat": None, "fit_info": {}}
+
         _notify(progress, progress_fn, "step_done", {"best_score": round(best_now["score"], 6)})
 
-        # --- Stop-Kriterium (optional): wechsle nur wenn relative Verbesserung groß genug ---
+        # Stop-Kriterium (optional)
         keep_prev = False
         try:
             if min_rel_improvement > 0.0 and np.isfinite(score_used) and score_used > 0:
@@ -546,9 +653,7 @@ def online_rolling_forecast(
             keep_prev = False
 
         if keep_prev:
-            # logge, dass keine Änderung erfolgt
             _push_tuning_row({"phase":"step","stage":"no_change","t":int(t0),"model":model_name,"score":score_used,"status":"ok","err":"","hp":json.dumps(prev_best["model_params"],sort_keys=True),**_summarize_fe_spec(prev_best["fe_spec"]), "used_es":None,"best_iteration":None,"n_used_cols":None}, flush=True)
-            # behalte prev_best
         else:
             _push_tuning_row({"phase":"step","stage":"final_pick","t":int(t0),"model":model_name,"score":best_now["score"],"status":"ok","err":"","hp":json.dumps(best_now["model_params"],sort_keys=True),**_summarize_fe_spec(best_now["fe_spec"]), "used_es":None,"best_iteration":None,"n_used_cols":None}, flush=True)
             prev_best = best_now
@@ -558,13 +663,10 @@ def online_rolling_forecast(
     _notify(progress, progress_fn, "done", {"n_preds": len(preds)})
 
     if report_csv_path is not None and len(preds) > 0:
-        # Seed-OOS auswertungsfrei
         preds_eval = preds.iloc[1:] if len(preds) > 1 else preds.iloc[:0]
         truths_eval = truths.loc[preds_eval.index]
-
         y_true = truths_eval.values.astype(float)
         y_hat = preds_eval.values.astype(float)
-
         final_rmse = _rmse(y_true, y_hat)
         final_mae = _mae(y_true, y_hat)
         row = {
@@ -579,6 +681,5 @@ def online_rolling_forecast(
         append_predictions_rows(predictions_csv_path, pred_rows_buffer)
         pred_rows_buffer.clear()
 
-    # Kompatibilität: leeres cfgdf (Details stehen in Tuning-CSV)
     cfgdf = pd.DataFrame(index=preds.index)
     return preds, truths, cfgdf

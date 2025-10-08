@@ -19,30 +19,38 @@ def _month_dummies(idx: pd.DatetimeIndex) -> pd.DataFrame:
     return D
 
 # residualize X and y on Z
-def _residualize(M: pd.DataFrame, y: pd.Series, use_month_dummies: bool, use_y_lags: bool):
+def _residualize(M: pd.DataFrame, y: pd.Series, use_month_dummies: bool, use_y_lags: bool, y_lags=(1,)):
+    y_col = y.name or "__y__"
+    y_ = y.rename(y_col)
+
     Z = []
     if use_month_dummies:
-        Z.append(_month_dummies(y.index))
-    if use_y_lags:
-        Z.append(pd.DataFrame({"yl1": y.shift(1).values, "yl12": y.shift(12).values}, index=y.index))
+        Z.append(_month_dummies(y_.index))
+    if use_y_lags and y_lags:
+        Z.append(pd.DataFrame({f"yl{L}": y_.shift(L).values for L in y_lags}, index=y_.index))
+
     Z = [z for z in Z if z is not None and z.shape[1] > 0]
     if len(Z) == 0:
-        return M, y
+        return M, y_
+
     Z = pd.concat(Z, axis=1).astype(float)
-    A = pd.concat([M, y, Z], axis=1).dropna()
+    A = pd.concat([M, y_, Z], axis=1).dropna()
     if A.empty:
-        return M.iloc[0:0, :], y.iloc[0:0]
+        return M.iloc[0:0, :], y_.iloc[0:0]
+
     cols_M = list(M.columns)
     X = A[cols_M].astype(float).values
     z = np.c_[np.ones((len(A),1)), A[Z.columns].astype(float).values]
-    yy = A[y.name].astype(float).values
+    yy = A[y_col].astype(float).values
+
     bz, *_ = np.linalg.lstsq(z, yy, rcond=None)
     ry = yy - z @ bz
     Bz, *_ = np.linalg.lstsq(z, X, rcond=None)
     RX = X - z @ Bz
-    Ry = pd.Series(ry, index=A.index, name=y.name)
-    RX = pd.DataFrame(RX, index=A.index, columns=cols_M)
-    return RX, Ry
+
+    return pd.DataFrame(RX, index=A.index, columns=cols_M), pd.Series(ry, index=A.index, name=y_col)
+
+
 
 # abs corr
 def _abs_corr_with_y(M: pd.DataFrame, y: pd.Series) -> pd.Series:
@@ -64,7 +72,7 @@ def _redundancy_filter(M: pd.DataFrame, order: List[str], tau: float) -> List[st
 
 # API
 def select_engineered_features(Mtr: pd.DataFrame, ytr: pd.Series, cfg: FeatureSelectCfg) -> List[str]:
-    M = _variance_filter(Mtr, cfg.variance_thresh)
+    M = _variance_filter(Mtr, cfg.variance_thresh).astype(float)
 
     if cfg.mode == "none":
         cols = list(M.columns)
@@ -72,8 +80,8 @@ def select_engineered_features(Mtr: pd.DataFrame, ytr: pd.Series, cfg: FeatureSe
         cols = [c for c in (cfg.manual_cols or []) if c in M.columns]
     else:
         if getattr(cfg, "prewhiten", False):
-            RX, Ry = _residualize(M, ytr, bool(getattr(cfg, "use_month_dummies", True)),
-                                  bool(getattr(cfg, "use_y_lags", True)))
+            lags = getattr(cfg, "y_lags", (1,))
+            RX, Ry = _residualize(M, ytr, cfg.use_month_dummies, cfg.use_y_lags, lags)
             M0, y0 = RX, Ry
         else:
             M0, y0 = M, ytr

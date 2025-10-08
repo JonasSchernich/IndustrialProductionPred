@@ -116,3 +116,13 @@ class BOCfg:
 class EnsembleCfg:
     use_weighted_mean: bool = False
     use_stacking: bool = False
+
+from dataclasses import dataclass
+
+@dataclass
+class InnerCVCfg:
+    use_inner_cv: bool = False
+    block_len: int = 20
+    n_blocks: int = 3
+    aggregate: str = "median"  # "median" oder "mean"
+    use_mean_rank: bool = True  # über Blöcke
