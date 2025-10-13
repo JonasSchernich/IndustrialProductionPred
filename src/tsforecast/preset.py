@@ -1,84 +1,112 @@
-from __future__ import annotations
-from typing import Tuple, Optional
-from .types import FeEngCfg, FeatureSelectCfg, TrainEvalCfg, AshaCfg, BOCfg
+# preset.py
+# Minimale, robuste Defaults passend zu deinem Protokoll.
 
-# FE-Presets (familienweise)
+def fs_cfg_default():
+    # prewhitened correlation als Default; saison-Lag nur bei Diagnose
+    return {
+        "mode": "auto_topk_prewhite",
+        "topk": 400,                  # Stage A variiert: {200,400,600}
+        "tau_scr": None,              # alternativ thresholds: {0.10,0.15,0.20}
+        "thresholds": [0.10, 0.15, 0.20],
+        "y_lags": (1,),               # D_s = (1, y_{t-1}); saisonal nur wenn Diagnostik dafür spricht
+        "seasonal": False,
+        "redundancy": {
+            "mode": "cluster",        # alternativ "mrmr"
+            "tau": 0.90,              # variiere {0.90,0.95}
+            "mrmr_k": None            # variiere {80,120,160} falls mode=="mrmr"
+        }
+    }
 
-def fe_cfg_tree(
-    tsfresh: bool = False,
-    fm_stack: bool = False,
-    rm: Tuple[int, ...] = (3,),
-    ema: Tuple[int, ...] = (3,),
-    per_feature_candidates: Tuple[int, ...] = (1, 2, 3, 6, 12),
-    per_feature_topk: int = 1,
-) -> FeEngCfg:
-    return FeEngCfg(
-        per_feature_lags=True,
-        per_feature_candidates=per_feature_candidates,
-        per_feature_topk=per_feature_topk,
-        candidate_lag_sets=((1, 3, 6, 12),),
-        candidate_rm_sets=(tuple(), rm),
-        candidate_ema_sets=(tuple(), ema),
-        candidate_pca=((None, None),),          # Trees: keine PCA
-        pca_stage_options=("post",),
-        optimize_fe_for_all_hp=True,
-        tsfresh_path="/mnt/data/tsfresh_slim.parquet" if tsfresh else None,
-        fm_pred_path="/mnt/data/chronos_1step.parquet" if fm_stack else None,
-        pca_solver="auto",
-    )
+def fe_cfg_linear():
+    # globale Lags; kein Smoother; externe Blöcke standardmäßig ohne Shift (F_t)
+    return {
+        "lags_global": [1, 3, 6, 12],
+        "rm3": False,
+        "external_shift": 0,          # 0 = F_t; 1 = F_{t-1} (bei externer Latenz)
+        "tsfresh_path": None,         # bei Nutzung setzen
+        "fm_pred_path": None          # Chronos/Found.-Densities (Parquet)
+    }
 
-def fe_cfg_linear(
-    tsfresh: bool = False,
-    fm_stack: bool = False,
-    rm: Tuple[int, ...] = (3,),
-    ema: Tuple[int, ...] = (3,),
-) -> FeEngCfg:
-    return FeEngCfg(
-        per_feature_lags=False,
-        candidate_lag_sets=((1, 3, 6, 12),),
-        candidate_rm_sets=(tuple(), rm),
-        candidate_ema_sets=(tuple(), ema),
-        candidate_pca=((None, 0.95), (None, 0.99), (None, None)),  # PCA post
-        pca_stage_options=("post",),
-        optimize_fe_for_all_hp=True,
-        tsfresh_path="/mnt/data/tsfresh_slim.parquet" if tsfresh else None,
-        fm_pred_path="/mnt/data/chronos_1step.parquet" if fm_stack else None,
-        pca_solver="auto",
-    )
+def fe_cfg_tree():
+    # per-Feature-Lagwahl; Ranking prewhitened
+    return {
+        "per_feature": {
+            "lag_candidates": [1, 2, 3, 6, 12],
+            "topk": 1,                # variiere {1,2}
+            "rank": "prewhite"        # "corr" oder "prewhite"
+        },
+        "rm3": False,
+        "external_shift": 0,
+        "tsfresh_path": None,
+        "fm_pred_path": None
+    }
 
-# Bequeme Defaults für FS/ES/ASHA/BO
+def asha_default():
+    # Stage A: 3 Blöcke, je 60 Schritte; effizient und reproduzierbar
+    return {
+        "fidelities": [1, 2, 3],
+        "steps": {1: 60, 2: 60, 3: 60},
+        "reduction": 3,
+        "grace_iter": 1
+    }
 
-def fs_cfg_default(
-    mode: str = "auto_topk",
-    topk: int = 250,
-    variance_thresh: float = 0.0,
-    min_abs_corr: float = 0.0,
-    manual_cols: Optional[Tuple[str, ...]] = None,
-) -> FeatureSelectCfg:
-    return FeatureSelectCfg(
-        mode=mode,
-        topk=topk,
-        variance_thresh=variance_thresh,
-        min_abs_corr=min_abs_corr,
-        manual_cols=list(manual_cols) if manual_cols else None,
-    )
+# --- Grids (Stage A) ---
 
-def train_eval_default(
-    dev_tail: int = 12,
-    early_stopping_rounds: int = 100,
-) -> TrainEvalCfg:
-    return TrainEvalCfg(dev_tail=dev_tail, early_stopping_rounds=early_stopping_rounds)
+def grid_dfm():
+    return {
+        "r": [2, 3, 4, 5, 6, 8],
+        "lag": [0, 1]
+    }
 
-def asha_default(seed: int = 42) -> AshaCfg:
-    return AshaCfg(
-        use_asha=True, seed=seed,
-        n_b1=60, steps_b1=60, promote_frac_1=0.25,
-        n_b2=30, steps_b2=150, promote_frac_2=0.4,
-        n_b3=8,  steps_b3=320
-    )
+def grid_pca_en():
+    return {
+        "pca_tau": [0.95, 0.99],
+        "pca_kmax": [25, 50, 100],
+        "alpha": [0.2, 0.4, 0.6, 0.8],
+        "lambda_grid": 50  # Log-Grid intern erzeugen
+    }
 
-def bo_default() -> BOCfg:
-    return BOCfg(
-        use_bo=True, n_iter=20, radius=0.25, steps=150, seed=123,
-        hp_keys=("num_leaves", "min_child_samples", "reg_lambda", "colsample_bytree")
-    )
+def grid_pls_en():
+    return {
+        "pls_c": [2, 4, 6, 8],
+        "alpha": [0.2, 0.4, 0.6, 0.8],
+        "lambda_grid": 50
+    }
+
+def grid_lgbm():
+    return {
+        "max_depth": [2, 3, 4],
+        "num_leaves": [7, 15, 31],
+        "learning_rate": [0.03, 0.05, 0.10],
+        "subsample": [0.6, 0.8],
+        "colsample_bytree": [0.5, 0.8],
+        "min_child_samples": [10, 20, 40],
+        "reg_lambda": [0, 5, 10, 20],
+        "reg_alpha": [0, 1, 5],
+        "n_estimators": 1500,   # mit Early Stopping auf Dev-Tail im Train
+    }
+
+def grid_xgb():
+    return {
+        "max_depth": [2, 3, 4],
+        "learning_rate": [0.03, 0.05, 0.10],
+        "subsample": [0.6, 0.8],
+        "colsample_bytree": [0.5, 0.8],
+        "min_child_weight": [1, 5, 10],
+        "reg_lambda": [0, 5, 10, 20],
+        "reg_alpha": [0, 1, 5],
+        "n_estimators": 1500,
+    }
+
+def grid_tabpfn():
+    return {
+        "dr_k": [32, 64, 96],
+        "samples": [8, 16, 32]
+    }
+
+# Optional: Feintuning-Nachbarschaften in Stage B
+def local_refinements():
+    return {
+        "pca_kmax": [50, 100, 150],
+        "pls_c": [2, 4, 6, 8, 10]
+    }

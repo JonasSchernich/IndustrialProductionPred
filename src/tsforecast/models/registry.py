@@ -30,6 +30,9 @@ def build_estimator(model_name: str, params: Dict[str, Any]):
     if name in ("ar1", "ar(1)"):
         from .baselines import AR1Model
         return AR1Model()
+    if name in ("pls_en", "pls+en", "en_pls", "plsen"):
+        from .pls_en import build_estimator as _bp
+        return _bp(params)
 
     raise ValueError(f"unknown model_name='{model_name}'")
 

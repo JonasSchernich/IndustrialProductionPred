@@ -21,13 +21,23 @@ BASELINE_MODELS = {"mean","avg","average","randomwalk","rw","naive","ar1","ar(1)
 
 # --- helpers ---
 def _align_after_engineering(M: pd.DataFrame, y: pd.Series) -> Tuple[pd.DataFrame, pd.Series]:
-    mask = (~M.isna().any(axis=1)) & y.notna()
-    if not mask.any():
-        return M.iloc[0:0,:], y.iloc[0:0]
-    first = int(np.argmax(mask.values))
-    M2, y2 = M.iloc[first:,:], y.iloc[first:]
-    tail = (~M2.isna().any(axis=1)) & y2.notna()
-    return M2.loc[tail], y2.loc[tail]
+    M2 = M.astype(float).ffill()  # nur Vergangenheit
+    y2 = y.astype(float)
+
+    # Startpunkt: y vorhanden und wenigstens eine Feature-Spalte vorhanden
+    have_any_x = ~M2.isna().all(axis=1)
+    mask_start = y2.notna() & have_any_x
+    if not mask_start.any():
+        return M.iloc[0:0, :], y.iloc[0:0]
+    first = int(np.argmax(mask_start.values))
+    M2 = M2.iloc[first:, :]
+    y2 = y2.iloc[first:]
+
+    # Spalten, die komplett NaN bleiben, entfernen (harmlos, FS filtert ohnehin)
+    M2 = M2.dropna(axis=1, how="all")
+
+    return M2, y2
+
 
 def _rmse(a, b) -> float:
     d = (np.asarray(a)-np.asarray(b)).astype(float)
@@ -45,10 +55,10 @@ def _summarize_fe_spec(fe_spec: Dict) -> Dict:
         "per_feature_lags": bool(fe_spec.get("lag_map") is not None),
         "lags": "" if fe_spec.get("lags") is None else ",".join(map(str, fe_spec.get("lags"))),
         "rm_windows": "" if not fe_spec.get("rm_windows") else ",".join(map(str, fe_spec.get("rm_windows"))),
-        "ema_spans": "" if not fe_spec.get("ema_spans") else ",".join(map(str, fe_spec.get("ema_spans"))),
         "tsfresh_on": bool(fe_spec.get("tsfresh_path")),
         "fm_on": bool(fe_spec.get("fm_pred_path")),
     }
+
 
 def _digest_lag_map(lm: Optional[Dict[str, List[int]]]) -> str:
     if not lm: return ""
@@ -59,7 +69,6 @@ def _cache_key(t, base_features, fe_spec, fs_cfg) -> str:
     fe = {
         "lags": tuple(fe_spec.get("lags") or ()),
         "rm": tuple(fe_spec.get("rm_windows") or ()),
-        "ema": tuple(fe_spec.get("ema_spans") or ()),
         "pca_stage": (fe_spec.get("pca_stage") or PCA_STAGE_DEFAULT),
         "pca_n": fe_spec.get("pca_n"),
         "pca_var": fe_spec.get("pca_var"),
@@ -129,8 +138,10 @@ def score_config_for_next_step(
             design_cache[key] = (Mtr_fin, ytr2, Mev_fin, eng_cols)
 
     est = build_estimator(model_name, dict(model_params))
-    used_es=False; best_iter=None
-    if train_eval_cfg and train_eval_cfg.early_stopping_rounds>0 and supports_es(model_name):
+    used_es = False;
+    best_iter = None
+    es_rounds = int(getattr(train_eval_cfg, "early_stopping_rounds", 0) or 0)
+    if train_eval_cfg and es_rounds > 0 and supports_es(model_name):
         dev_tail = max(0, int(train_eval_cfg.dev_tail))
         if dev_tail>0 and len(Mtr_fin)>dev_tail:
             Xtr = Mtr_fin.iloc[:-dev_tail,:]; ytr2a = ytr2.iloc[:-dev_tail]
@@ -156,17 +167,21 @@ def _fe_candidates_from_cfg(Xtr, ytr, base_features, fe_cfg, existing_lag_map: O
     if fe_cfg.per_feature_lags:
         lag_map = existing_lag_map or make_per_feature_lags_by_corr(Xtr[base_features], ytr, fe_cfg.per_feature_candidates, fe_cfg.per_feature_topk)
         for rms in fe_cfg.candidate_rm_sets:
-            for emas in fe_cfg.candidate_ema_sets:
-                for pca_n,pca_var in fe_cfg.candidate_pca:
-                    for pca_stage in fe_cfg.pca_stage_options:
-                        specs.append({"lag_map":lag_map,"rm_windows":rms,"ema_spans":emas,"pca_n":pca_n,"pca_var":pca_var,"pca_stage":pca_stage,"pca_solver":getattr(fe_cfg,"pca_solver","auto"),**extra})
+            for pca_n, pca_var in fe_cfg.candidate_pca:
+                for pca_stage in fe_cfg.pca_stage_options:
+                    specs.append({"lag_map": lag_map, "rm_windows": rms,
+                                  "pca_n": pca_n, "pca_var": pca_var,
+                                  "pca_stage": pca_stage, "pca_solver": getattr(fe_cfg, "pca_solver", "auto"),
+                                  **extra})
     else:
         for lset in fe_cfg.candidate_lag_sets:
             for rms in fe_cfg.candidate_rm_sets:
-                for emas in fe_cfg.candidate_ema_sets:
-                    for pca_n,pca_var in fe_cfg.candidate_pca:
-                        for pca_stage in fe_cfg.pca_stage_options:
-                            specs.append({"lags":lset,"rm_windows":rms,"ema_spans":emas,"pca_n":pca_n,"pca_var":pca_var,"pca_stage":pca_stage,"pca_solver":getattr(fe_cfg,"pca_solver","auto"),**extra})
+                for pca_n, pca_var in fe_cfg.candidate_pca:
+                    for pca_stage in fe_cfg.pca_stage_options:
+                        specs.append({"lags": lset, "rm_windows": rms,
+                                      "pca_n": pca_n, "pca_var": pca_var,
+                                      "pca_stage": pca_stage, "pca_solver": getattr(fe_cfg, "pca_solver", "auto"),
+                                      **extra})
     return specs
 
 def _count_evals(n_hp, n_fe, full: bool) -> int:
@@ -322,17 +337,28 @@ def online_rolling_forecast(
         pred_rows_buffer.append(row)
         if flush or len(pred_rows_buffer)>=500:
             append_predictions_rows(predictions_csv_path, pred_rows_buffer); pred_rows_buffer.clear()
-    def _row_common(stage,phase,t,hp,fe_spec,score,status,err,fit_info=None,used_cols=None):
-        fe_sum=_summarize_fe_spec(fe_spec)
+
+    def _row_common(stage, phase, t, hp, fe_spec, score, status, err, fit_info=None, used_cols=None):
+        fe_sum = _summarize_fe_spec(fe_spec)
+        # defaults
+        pca_stage = fe_sum.get("pca_stage", None)
+        pca_n = fe_sum.get("pca_n", None)
+        pca_var = fe_sum.get("pca_var", None)
+        pfl = bool(fe_sum.get("per_feature_lags", False))
+        lags = fe_sum.get("lags", ())
+        rm_windows = fe_sum.get("rm_windows", ())
+        tsfresh_on = bool(fe_sum.get("tsfresh_on", False))
+        fm_on = bool(fe_sum.get("fm_on", False))
+
         return {
-            "phase":phase,"stage":stage,"t":int(t),"model":model_name,"score":score,"status":status,"err":(err or "")[:500],
-            "hp":json.dumps(hp,sort_keys=True),
-            "pca_stage":fe_sum["pca_stage"],"pca_n":fe_sum["pca_n"],"pca_var":fe_sum["pca_var"],
-            "per_feature_lags":fe_sum["per_feature_lags"],"lags":fe_sum["lags"],
-            "rm_windows":fe_sum["rm_windows"],"ema_spans":fe_sum["ema_spans"],
-            "tsfresh_on":fe_sum["tsfresh_on"],"fm_on":fe_sum["fm_on"],
-            "used_es": None if fit_info is None else bool(fit_info.get("used_es",False)),
-            "best_iteration": None if fit_info is None else fit_info.get("best_iteration",None),
+            "phase": phase, "stage": stage, "t": int(t), "model": model_name,
+            "score": score, "status": status, "err": (err or "")[:500],
+            "hp": json.dumps(hp, sort_keys=True),
+            "pca_stage": pca_stage, "pca_n": pca_n, "pca_var": pca_var,
+            "per_feature_lags": pfl, "lags": lags, "rm_windows": rm_windows,
+            "tsfresh_on": tsfresh_on, "fm_on": fm_on,
+            "used_es": None if fit_info is None else bool(fit_info.get("used_es", False)),
+            "best_iteration": None if fit_info is None else fit_info.get("best_iteration", None),
             "n_used_cols": None if used_cols is None else int(len(used_cols)),
         }
 
@@ -439,6 +465,9 @@ def online_rolling_forecast(
                 cand={"t":start_t,"fe_spec":fe_spec,"model_params":mp,"score":sc,"yhat":yh,"fit_info":fit_info}
                 if (best_init is None) or (sc<best_init["score"]): best_init=cand
         tracker_init.finish()
+        if best_init is None:
+            raise RuntimeError(
+                "INIT produced no viable config. Check FE/FS or data gaps (try ffill, fs_cfg.mode='none').")
         print(f"[init] best_score={round(best_init['score'],6)}", flush=True)
         _push_tuning_row({"phase":"init","stage":"final_pick","t":int(start_t),"model":model_name,"score":best_init["score"],"status":"ok","err":"","hp":json.dumps(best_init["model_params"],sort_keys=True),**_summarize_fe_spec(best_init["fe_spec"]), "used_es":None,"best_iteration":None,"n_used_cols":None}, flush=True)
 
@@ -528,25 +557,32 @@ def online_rolling_forecast(
             cand_specs = (frozen_pairs if frozen_pairs is not None else
                           ([(mp, fe) for mp in hp_list for fe in fe_candidates] if fe_cfg.optimize_fe_for_all_hp
                            else [(active_spec["model_params"], active_spec["fe_spec"])]))
-            scores=[]
+            scores = []
             for (mp, fe) in cand_specs:
                 try:
-                    sc = _window_policy_score(X, y, base_features0, fs_cfg, model_name, mp, fe, metric_fn, train_eval_cfg, t0, pol_win)
+                    sc = _window_policy_score(X, y, base_features0, fs_cfg, model_name, mp, fe, metric_fn,
+                                              train_eval_cfg, t0, pol_win)
                     scores.append((sc, mp, fe))
                 except Exception:
                     pass
             if not scores:
-                scores=[(sc_prev, active_spec["model_params"], active_spec["fe_spec"])]
+                scores = [(sc_prev, active_spec["model_params"], active_spec["fe_spec"])]
             scores.sort(key=lambda z: z[0])
             best_sc, best_mp, best_fe = scores[0]
 
-            rel_impr = ((sc_prev - best_sc) / sc_prev) if (np.isfinite(sc_prev) and sc_prev > 0 and np.isfinite(best_sc)) else -np.inf
+            rel_impr = ((sc_prev - best_sc) / sc_prev) if (
+                        np.isfinite(sc_prev) and sc_prev > 0 and np.isfinite(best_sc)) else -np.inf
             ok_cooldown = (pol_cooldown <= 0) or (t0 - last_switch_t >= pol_cooldown)
             if rel_impr >= float(min_rel_improvement) and ok_cooldown:
-                _schedule_activation(t0, {"t": t0, "fe_spec": best_fe, "model_params": best_mp, "score": float(best_sc), "yhat": None, "fit_info": {}})
-                _push_tuning_row(_row_common("policy","schedule_switch",t0,best_mp,best_fe,best_sc,"ok",""), flush=True)
+                _schedule_activation(t0,
+                                     {"t": t0, "fe_spec": best_fe, "model_params": best_mp, "score": float(best_sc),
+                                      "yhat": None, "fit_info": {}})
+                _push_tuning_row(_row_common("policy", "schedule_switch", t0, best_mp, best_fe, best_sc, "ok", ""),
+                                 flush=True)
             else:
-                _push_tuning_row(_row_common("policy","keep_active",t0,active_spec["model_params"],active_spec["fe_spec"],sc_prev,"ok",""), flush=True)
+                _push_tuning_row(
+                    _row_common("policy", "keep_active", t0, active_spec["model_params"], active_spec["fe_spec"],
+                                sc_prev, "ok", ""), flush=True)
 
             # Prognose: aktives Setup, optional temporales Ensemble
             def _predict_one(mp, fe):
@@ -563,7 +599,7 @@ def online_rolling_forecast(
                 hist = active_history[:max(1, te_memory)]
                 ages = [t0 - a_t for (_, _, a_t) in hist]
                 ws = _te_weights(ages, half_life=te_half_life, min_active_w=te_min_active_w)
-                yhats=[]
+                yhats = []
                 for (mp_i, fe_i, _), w_i in zip(hist, ws):
                     yhats.append(_predict_one(mp_i, fe_i) * float(w_i))
                 yhat = float(np.sum(yhats))
@@ -574,22 +610,39 @@ def online_rolling_forecast(
             cand_specs = (frozen_pairs if frozen_pairs is not None else
                           ([(mp, fe) for mp in hp_list for fe in fe_candidates] if fe_cfg.optimize_fe_for_all_hp
                            else [(active_spec["model_params"], active_spec["fe_spec"])]))
-            scores=[]
-            for (mp,fe) in cand_specs:
+            scores = []
+            for (mp, fe) in cand_specs:
                 try:
-                    sc = _window_policy_score(X, y, base_features0, fs_cfg, model_name, mp, fe, metric_fn, train_eval_cfg, t0, pol_win)
+                    sc = _window_policy_score(X, y, base_features0, fs_cfg, model_name, mp, fe, metric_fn,
+                                              train_eval_cfg, t0, pol_win)
                     scores.append((sc, mp, fe))
                 except Exception:
                     pass
-            scores=[s for s in scores if np.isfinite(s[0])]
-            if not scores: scores=[(float("inf"), active_spec["model_params"], active_spec["fe_spec"])]
-            scores.sort(key=lambda z:z[0])
+            scores = [s for s in scores if np.isfinite(s[0])]
+            if not scores: scores = [(float("inf"), active_spec["model_params"], active_spec["fe_spec"])]
+            scores.sort(key=lambda z: z[0])
             sc0, mp0, fe0 = scores[0]
 
+            # Guardrail gegen aktive Spec
+            try:
+                sc_prev = _window_policy_score(
+                    X, y, base_features0, fs_cfg, model_name,
+                    active_spec["model_params"], active_spec["fe_spec"],
+                    metric_fn, train_eval_cfg, t0, pol_win
+                )
+            except Exception:
+                sc_prev = float("inf")
+            rel_impr = ((sc_prev - sc0) / sc_prev) if (
+                        np.isfinite(sc_prev) and sc_prev > 0 and np.isfinite(sc0)) else -np.inf
             ok_cooldown = (pol_cooldown <= 0) or (t0 - last_switch_t >= pol_cooldown)
-            if ok_cooldown:
-                _schedule_activation(t0, {"t": t0, "fe_spec": fe0, "model_params": mp0, "score": float(sc0), "yhat": None, "fit_info": {}})
-                _push_tuning_row(_row_common("policy","schedule_select",t0,mp0,fe0,sc0,"ok",""), flush=True)
+            if (rel_impr >= float(min_rel_improvement)) and ok_cooldown:
+                _schedule_activation(t0, {"t": t0, "fe_spec": fe0, "model_params": mp0, "score": float(sc0),
+                                          "yhat": None, "fit_info": {}})
+                _push_tuning_row(_row_common("policy", "schedule_select", t0, mp0, fe0, sc0, "ok", ""), flush=True)
+            else:
+                _push_tuning_row(
+                    _row_common("policy", "keep_active", t0, active_spec["model_params"], active_spec["fe_spec"],
+                                sc_prev, "ok", ""), flush=True)
 
             # Prognose: aktives Setup, optional temporales Ensemble
             def _predict_one(mp, fe):
@@ -606,7 +659,7 @@ def online_rolling_forecast(
                 hist = active_history[:max(1, te_memory)]
                 ages = [t0 - a_t for (_, _, a_t) in hist]
                 ws = _te_weights(ages, half_life=te_half_life, min_active_w=te_min_active_w)
-                yhats=[]
+                yhats = []
                 for (mp_i, fe_i, _), w_i in zip(hist, ws):
                     yhats.append(_predict_one(mp_i, fe_i) * float(w_i))
                 yhat = float(np.sum(yhats))
@@ -617,31 +670,52 @@ def online_rolling_forecast(
             cand_specs = (frozen_pairs if frozen_pairs is not None else
                           ([(mp, fe) for mp in hp_list for fe in fe_candidates] if fe_cfg.optimize_fe_for_all_hp
                            else [(active_spec["model_params"], active_spec["fe_spec"])]))
-            scores=[]
-            for (mp,fe) in cand_specs:
+            scores = []
+            for (mp, fe) in cand_specs:
                 try:
-                    sc = _window_policy_score(X, y, base_features0, fs_cfg, model_name, mp, fe, metric_fn, train_eval_cfg, t0, pol_win)
+                    sc = _window_policy_score(X, y, base_features0, fs_cfg, model_name, mp, fe, metric_fn,
+                                              train_eval_cfg, t0, pol_win)
                     scores.append((sc, mp, fe))
                 except Exception:
                     pass
-            scores=[s for s in scores if np.isfinite(s[0])]
-            if not scores: scores=[(float("inf"), active_spec["model_params"], active_spec["fe_spec"])]
-            scores.sort(key=lambda z:z[0])
+            scores = [s for s in scores if np.isfinite(s[0])]
+            if not scores: scores = [(float("inf"), active_spec["model_params"], active_spec["fe_spec"])]
+            scores.sort(key=lambda z: z[0])
             top = scores[:max(1, pol_k)]
             w = np.array([1.0 / (s[0] + pol_eps) for s in top], dtype=float)
-            w = w / w.sum()
+            s = float(np.sum(w))
+            w = (w / s) if np.isfinite(s) and s > 0 else (np.ones_like(w) / len(w))
+
+            # Guardrail gegen aktive Spec
+            try:
+                sc_prev = _window_policy_score(
+                    X, y, base_features0, fs_cfg, model_name,
+                    active_spec["model_params"], active_spec["fe_spec"],
+                    metric_fn, train_eval_cfg, t0, pol_win
+                )
+            except Exception:
+                sc_prev = float("inf")
+            best_sc = top[0][0]
+            rel_impr = ((sc_prev - best_sc) / sc_prev) if (
+                        np.isfinite(sc_prev) and sc_prev > 0 and np.isfinite(best_sc)) else -np.inf
             ok_cooldown = (pol_cooldown <= 0) or (t0 - last_switch_t >= pol_cooldown)
-            if ok_cooldown:
+            if (rel_impr >= float(min_rel_improvement)) and ok_cooldown:
                 _schedule_activation(t0, [(mp_i, fe_i, float(w_i)) for (s_i, mp_i, fe_i), w_i in zip(top, w)])
-                _push_tuning_row(_row_common("policy","schedule_ensemble",t0,{}, {}, float(np.sum(w)), "ok",""), flush=True)
+                _push_tuning_row(_row_common("policy", "schedule_ensemble", t0, {}, {}, float(np.sum(w)), "ok", ""),
+                                 flush=True)
+            else:
+                _push_tuning_row(
+                    _row_common("policy", "keep_active", t0, active_spec["model_params"], active_spec["fe_spec"],
+                                sc_prev, "ok", ""), flush=True)
 
             # Prognose: aktuelles Ensemble (temporales Ensemble wird hier bewusst NICHT kombiniert)
-            yhats=[]
+            yhats = []
             if active_ensemble:
                 for (mp_i, fe_i, w_i) in active_ensemble:
                     try:
                         _, yhat_i, _, _ = score_config_for_next_step(
-                            X, y, t0, base_features0, fe_i, fs_cfg, model_name, mp_i, metric_fn, train_eval_cfg, design_cache={}
+                            X, y, t0, base_features0, fe_i, fs_cfg, model_name, mp_i, metric_fn, train_eval_cfg,
+                            design_cache={}
                         )
                     except Exception:
                         yhat_i = float("nan")
@@ -650,7 +724,8 @@ def online_rolling_forecast(
             else:
                 try:
                     _, yhat, _, _ = score_config_for_next_step(
-                        X, y, t0, base_features0, active_spec["fe_spec"], fs_cfg, model_name, active_spec["model_params"],
+                        X, y, t0, base_features0, active_spec["fe_spec"], fs_cfg, model_name,
+                        active_spec["model_params"],
                         metric_fn, train_eval_cfg, design_cache={}
                     )
                 except Exception:
@@ -658,10 +733,13 @@ def online_rolling_forecast(
         else:
             raise ValueError(f"Unknown policy mode: {pol_mode}")
 
-        preds.append((y.index[t_pred], yhat))
-        truths.append((y.index[t_pred], float(y.iloc[t_pred])))
-        _push_pred_row({"time": y.index[t_pred], "model": model_name, "y_true": float(y.iloc[t_pred]), "y_hat": float(yhat)})
-        roll_tracker.update(extra={"t": int(t0), "pred": str(getattr(y.index[t_pred], "date", lambda: y.index[t_pred])())})
+            preds.append((y.index[t_pred], yhat))
+            truths.append((y.index[t_pred], float(y.iloc[t_pred])))
+            _push_pred_row(
+                {"time": y.index[t_pred], "model": model_name, "y_true": float(y.iloc[t_pred]), "y_hat": float(yhat)})
+            roll_tracker.update(
+                extra={"t": int(t0), "pred": str(getattr(y.index[t_pred], "date", lambda: y.index[t_pred])())})
+
 
     roll_tracker.finish()
 
