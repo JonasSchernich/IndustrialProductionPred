@@ -51,7 +51,7 @@ class FeEngCfg:
 
     candidate_lag_sets: Tuple[Tuple[int, ...], ...] = ((1, 3, 6, 12),)
     candidate_rm_sets: Tuple[Tuple[int, ...], ...] = ((), (3,), (3, 6))
-    candidate_ema_sets: Tuple[Tuple[int, ...], ...] = ((), (3,), (3, 6))
+    #candidate_ema_sets: Tuple[Tuple[int, ...], ...] = ((), (3,), (3, 6))
     candidate_pca: Tuple[Tuple[Optional[int], Optional[float]], ...] = ((None, None),)
     pca_stage_options: Tuple[str, ...] = ("post",)
 

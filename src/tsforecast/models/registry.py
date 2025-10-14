@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Any
-import numpy as np
+
 
 def build_estimator(model_name: str, params: Dict[str, Any]):
     name = (model_name or "").lower()
@@ -14,7 +14,7 @@ def build_estimator(model_name: str, params: Dict[str, Any]):
         return _bl(params)
 
     if name in ("elasticnet", "en", "enet"):
-        from .elasticnet import build_estimator as _be
+        from src.tsforecast.models.elasticnet import build_estimator as _be
         return _be(params)
 
     if name in ("tabpfn", "tab-pfn"):

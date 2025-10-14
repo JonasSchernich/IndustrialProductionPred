@@ -1,1 +1,1 @@
-from .types import FeatureSelectCfg, FeEngCfg, LagCfg
+from .types import FeatureSelectCfg, FeEngCfg

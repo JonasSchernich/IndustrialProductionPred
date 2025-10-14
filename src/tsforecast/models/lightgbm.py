@@ -1,22 +1,23 @@
 from __future__ import annotations
 from typing import Dict, Any
 
-def _default_params() -> Dict[str, Any]:
+def _default_params():
     return dict(
-        n_estimators=600,
+        n_estimators=1200,
         learning_rate=0.05,
-        max_depth=-1,
-        num_leaves=63,
+        max_depth=3,                # statt -1
+        num_leaves=31,              # 7/15/31; klein hält Varianz
         min_child_samples=20,
         subsample=0.8,
-        colsample_bytree=0.8,
-        reg_alpha=0.0,
-        reg_lambda=1.0,
-        n_jobs=-1,
+        subsample_freq=1,           # neu: aktivieren
+        feature_fraction=0.8,       # kanonisch für LGBM
+        reg_alpha=2.0,              # stärker
+        reg_lambda=10.0,            # stärker
+        n_jobs=1,                   # deterministischer
         random_state=42,
         verbose=-1,
-        # device/device_type werden unten gemappt
     )
+
 
 def build_estimator(params: Dict[str, Any]):
     try:

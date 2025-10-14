@@ -1,30 +1,41 @@
-# models/chronos.py
-import numpy as np
+# tsforecast/models/chronos.py
+from __future__ import annotations
+import numpy as np, torch
+from chronos import ChronosPipeline
 
 class ChronosRegressor:
-    def __init__(self, model_id="amazon/chronos-t5-tiny", device_map="auto", torch_dtype="bfloat16"):
-        try:
-            from chronos import ChronosPipeline
-            import torch
-        except Exception as e:
-            raise ImportError("pip install chronos-forecasting torch") from e
-        self._ChronosPipeline = ChronosPipeline
-        import torch as _torch
-        self._torch = _torch
+    def __init__(self,
+                 model_id: str = "amazon/chronos-t5-tiny",
+                 use_gpu: bool = False,
+                 torch_dtype: str = "float32",
+                 num_samples: int = 20):
         self.model_id = model_id
-        self.device_map = device_map
-        self.torch_dtype = getattr(_torch, torch_dtype)
+        self.device_map = "cuda" if (use_gpu and torch.cuda.is_available()) else "cpu"
+        self.dtype = getattr(torch, torch_dtype, torch.float32)
+        self.num_samples = int(num_samples)
         self.pipe = None
         self.hist = None
 
-    def fit(self, X, y):
+    def _ensure_loaded(self):
         if self.pipe is None:
-            self.pipe = self._ChronosPipeline.from_pretrained(
-                self.model_id, device_map=self.device_map, torch_dtype=self.torch_dtype
+            self.pipe = ChronosPipeline.from_pretrained(
+                self.model_id, device_map=self.device_map, torch_dtype=self.dtype
             )
-        self.hist = self._torch.tensor(np.asarray(y, dtype=float))
+
+    def fit(self, X, y):
+        self._ensure_loaded()
+        self.hist = np.asarray(y, dtype=float).copy()
         return self
 
     def predict(self, X):
-        fc = self.pipe.predict(self.hist, horizon=1)
-        return np.asarray([float(fc[0])])
+        self._ensure_loaded()
+        if self.hist is None or self.hist.size == 0:
+            return np.asarray([np.nan], dtype=float)
+        ctx = torch.tensor(self.hist, dtype=torch.float32)
+        try:
+            samples = self.pipe.predict(context=ctx, prediction_length=1, num_samples=self.num_samples)
+            v = float(samples.mean().item())
+        except TypeError:
+            samples = self.pipe.predict(ctx, horizon=1, num_samples=self.num_samples)
+            v = float(samples.mean().item())
+        return np.asarray([v], dtype=float)

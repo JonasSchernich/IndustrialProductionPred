@@ -23,13 +23,12 @@ def make_per_feature_lags_by_corr(
     """
     Wählt je Basisfeature die Lags mit maximaler |corr(X.shift(L), y)|,
     berechnet auf dem Trainingsfenster in exakt der finalen Ausrichtung.
-    Kein zusätzlicher shift(1) für Lags – der gilt nur für Smoother/extern.
+    Kein zusätzlicher shift(1) für Lags – der gilt nur für externe Blöcke.
     """
-    # Kandidaten normalisieren (unterstützt int-Iterables oder Tuple von Sets)
+    # Kandidaten normalisieren
     if candidates is None:
         cand = [1, 2, 3, 6, 12]
     elif isinstance(candidates, (list, tuple)) and len(candidates) > 0 and isinstance(candidates[0], (list, tuple, set)):
-        # mehrere Sets -> vereinigen
         s = set()
         for block in candidates:
             s.update(int(l) for l in block)
@@ -44,21 +43,17 @@ def make_per_feature_lags_by_corr(
         x = Xtr[c].astype(float)
         stats = []
         for L in cand:
-            s = x.shift(L)  # final genutzte Ausrichtung für h=1
-            z = pd.concat([s, yv], axis=1).dropna()
-            if len(z) < 8:  # zu wenig Beobachtungen? überspringen
+            z = x.shift(L)
+            ok = z.notna() & yv.notna()
+            if ok.sum() < 10:
                 continue
-            r = z.iloc[:, 0].corr(z.iloc[:, 1])
-            if pd.isna(r):
-                continue
-            stats.append((abs(float(r)), L))
-
+            r = np.corrcoef(z[ok].values, yv[ok].values)[0, 1]
+            if np.isfinite(r):
+                stats.append((abs(float(r)), L))
+        stats.sort(key=lambda z: z[0], reverse=True)
         if not stats:
             continue
-
-        # nach |corr| sortieren und Top-k Lags behalten
-        stats.sort(key=lambda t: t[0], reverse=True)
-        chosen = [L for _, L in stats[:max(1, int(topk))]]
+        chosen = [L for (_, L) in stats[:max(1, int(topk))]]
         lag_map[c] = chosen
 
     return lag_map
@@ -73,21 +68,16 @@ def apply_per_feature_lags(X: pd.DataFrame, lag_map: Dict[str, List[int]]) -> pd
             out[f"{c}_lag{L}"] = X[c].shift(L)
     return pd.DataFrame(out, index=X.index)
 
-def make_rolling_means(X: pd.DataFrame, windows: Iterable[int]) -> pd.DataFrame:
-    ws = [int(w) for w in windows if int(w) > 0]
+def make_rolling_means_shifted(X: pd.DataFrame, windows) -> pd.DataFrame:
+    windows = sorted({int(w) for w in windows if int(w) > 1})
     out = {}
+    Xs = X.shift(1)  # F_t: Zeile t nutzt nur <= t
     for c in X.columns:
-        for w in ws:
-            out[f"{c}_rm{w}"] = X[c].rolling(window=w, min_periods=w).mean().shift(1)
+        s = Xs[c]
+        for w in windows:
+            out[f"{c}_rm{w}_lag1"] = s.rolling(w, min_periods=w).mean()
     return pd.DataFrame(out, index=X.index)
 
-def make_ema(X: pd.DataFrame, spans: Iterable[int]) -> pd.DataFrame:
-    ss = [int(s) for s in spans if int(s) > 0]
-    out = {}
-    for c in X.columns:
-        for s in ss:
-            out[f"{c}_ema{s}"] = X[c].ewm(span=s, adjust=False, min_periods=s).mean().shift(1)
-    return pd.DataFrame(out, index=X.index)
 
 # === Externe Blöcke ===
 
@@ -102,24 +92,52 @@ def _shift_all_cols(M: pd.DataFrame, k: int = 1) -> pd.DataFrame:
     return M.shift(k)
 
 def _merge_external_blocks(X: pd.DataFrame, fe_spec: Dict) -> pd.DataFrame:
-    # nur externe, strikt geshiftete Features; kein X beilegen
+    # extern gelieferte Blöcke; standardmäßig konservativ mit shift(1)
+    ext_shift = int(fe_spec.get("external_shift", 0))  # 1 = F_{t-1}, 0 = F_t (nur bei echter Inline-Berechnung!)
     M = pd.DataFrame(index=X.index)
 
+    def _apply_cadence(df: pd.DataFrame, cadence: int) -> pd.DataFrame:
+        if cadence <= 1 or df.empty:
+            return df
+        pos = np.arange(len(df), dtype=int)
+        anyrow = df.notna().any(axis=1).to_numpy()
+        first = int(np.argmax(anyrow)) if anyrow.any() else 0
+        mask = ((pos - first) % cadence) == 0
+        return df.where(pd.Series(mask, index=df.index), np.nan)
+
+    def _prep(df: pd.DataFrame, cadence: int, shift: int) -> pd.DataFrame:
+        df = df.reindex(X.index)
+        df = _apply_cadence(df, cadence)
+        if shift != 0:
+            df = df.shift(shift)
+        if cadence > 1:
+            df = df.ffill()
+        return df
+
+    # TSFresh
     tsfresh_path = fe_spec.get("tsfresh_path")
     if tsfresh_path:
         T = _load_parquet_safe(tsfresh_path)
-        T = T.reindex(X.index)
-        T = _shift_all_cols(T, 1)
+        pref = fe_spec.get("tsfresh_prefix", "")
+        if pref:
+            T = T.add_prefix(pref)
+        cad = int(fe_spec.get("tsfresh_cadence", 1) or 1)
+        T = _prep(T, cadence=cad, shift=ext_shift)
         M = M.join(T, how="left")
 
+    # Foundation/Chronos
     fm_pred_path = fe_spec.get("fm_pred_path")
     if fm_pred_path:
         F = _load_parquet_safe(fm_pred_path)
-        F = F.reindex(X.index)
-        F = _shift_all_cols(F, 1)
+        pref = fe_spec.get("fm_prefix", "")
+        if pref:
+            F = F.add_prefix(pref)
+        cad = int(fe_spec.get("fm_cadence", 1) or 1)
+        F = _prep(F, cadence=cad, shift=ext_shift)
         M = M.join(F, how="left")
 
     return _cast_float32(M)
+
 
 
 def _cast_float32(M: pd.DataFrame) -> pd.DataFrame:
@@ -136,7 +154,8 @@ def build_engineered_matrix(
     fe_spec: Dict
 ) -> pd.DataFrame:
     """
-    Kombiniert Lags/Per-Feature-Lags, RM, EMA und externe Blöcke. Leakage-sicher (shift in RM/EMA/externe).
+    Kombiniert Lags/Per-Feature-Lags, RM und externe Blöcke.
+    Leakage-sicher: RM kausal ohne extra Shift; externe Blöcke mit shift(1).
     """
     Xb = X[base_features].copy()
     blocks = []
@@ -149,20 +168,18 @@ def build_engineered_matrix(
     elif lags is not None:
         blocks.append(make_global_lags(Xb, lags))
 
-    # Rolling / EMA (immer auf Basisfeatures; optional auch auf Lags – hier konservativ)
+    # Rolling Mean (immer auf Basisfeatures; konservativ)
     rm_windows = fe_spec.get("rm_windows") or ()
     if len(rm_windows) > 0:
-        blocks.append(make_rolling_means(Xb, rm_windows))
+        blocks.append(make_rolling_means_shifted(Xb, rm_windows))
 
-    ema_spans = fe_spec.get("ema_spans") or ()
-    if len(ema_spans) > 0:
-        blocks.append(make_ema(Xb, ema_spans))
+    # no EMA
 
     # Merge Blöcke
     if blocks:
         M = pd.concat(blocks, axis=1)
     else:
-        M = pd.DataFrame(index=X.index)  # leer
+        M = pd.DataFrame(index=X.index)
 
     # Externe Blöcke (shifted)
     if ("tsfresh_path" in fe_spec and fe_spec["tsfresh_path"]) or ("fm_pred_path" in fe_spec and fe_spec["fm_pred_path"]):
@@ -192,8 +209,6 @@ def apply_pca_train_transform(
     if (pca_n is None) and (pca_var is None):
         return M_train.copy(), M_eval.copy()
 
-    # numerische Spalten
-    cols = list(M_train.columns)
     scaler = StandardScaler()
     Ztr = scaler.fit_transform(M_train.values)
     Zev = scaler.transform(M_eval.values)

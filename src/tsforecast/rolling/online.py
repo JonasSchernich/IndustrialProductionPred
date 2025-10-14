@@ -91,7 +91,8 @@ def _cache_key(t, base_features, fe_spec, fs_cfg) -> str:
 # --- single-step fit+predict (train-only transforms, causal) ---
 def score_config_for_next_step(
     X, y, t, base_features, fe_spec, fs_cfg, model_name, model_params, metric_fn,
-    train_eval_cfg: Optional[TrainEvalCfg]=None, design_cache: Optional[Dict[str, Tuple[pd.DataFrame,pd.Series,pd.DataFrame,List[str]]]]=None
+    train_eval_cfg: Optional[TrainEvalCfg]=None,
+    design_cache: Optional[Dict[str, Tuple[pd.DataFrame,pd.Series,pd.DataFrame,List[str]]]]=None
 ):
     if model_name.lower() in BASELINE_MODELS:
         ytr = y.iloc[:t+1]
@@ -102,55 +103,98 @@ def score_config_for_next_step(
         return val, yhat, None, {"used_es": False, "best_iteration": None}
 
     key = _cache_key(t, base_features, fe_spec, fs_cfg)
-    Mtr_fin=ytr2=Mev_fin=eng_cols=None
+    Mtr_fin = ytr2 = Mev_fin = eng_cols = None
     if design_cache is not None and key in design_cache:
         Mtr_fin, ytr2, Mev_fin, eng_cols = design_cache[key]
 
     if Mtr_fin is None:
-        pca_n   = fe_spec.get("pca_n")
-        pca_var = fe_spec.get("pca_var")
+        pca_n     = fe_spec.get("pca_n")
+        pca_var   = fe_spec.get("pca_var")
         pca_stage = (fe_spec.get("pca_stage") or PCA_STAGE_DEFAULT).lower()
 
         Xtr = X.iloc[:t+1, :][base_features]
         Xev = X.iloc[:t+2, :][base_features]
 
         if pca_stage == "pre" and (pca_n is not None or pca_var is not None):
-            PCtr, PCev = apply_pca_train_transform(Xtr, Xev, pca_n=pca_n, pca_var=pca_var, pca_solver=fe_spec.get("pca_solver","auto"))
-            pc_cols = list(PCtr.columns)
-            Mtr = build_engineered_matrix(PCtr, pc_cols, fe_spec)
+            PCtr, PCev = apply_pca_train_transform(
+                Xtr, Xev, pca_n=pca_n, pca_var=pca_var,
+                pca_solver=fe_spec.get("pca_solver", "auto")
+            )
+            pc_cols  = list(PCtr.columns)
+            Mtr      = build_engineered_matrix(PCtr, pc_cols, fe_spec)
             Mev_full = build_engineered_matrix(PCev, pc_cols, fe_spec).iloc[[-1], :]
-            if Mtr.shape[1]==0: raise ValueError("no cols")
+            if Mtr.shape[1] == 0:
+                raise ValueError("no cols")
             Mtr2, ytr2 = _align_after_engineering(Mtr, y.iloc[:t+1])
-            eng_cols = select_engineered_features(Mtr2, ytr2, fs_cfg)
-            if len(eng_cols)==0: raise ValueError("no selected cols")
-            Mtr_fin = Mtr2[eng_cols]; Mev_fin = Mev_full[eng_cols]
+            eng_cols   = select_engineered_features(Mtr2, ytr2, fs_cfg)
+            if len(eng_cols) == 0:
+                raise ValueError("no selected cols")
+
+            cols = [c for c in eng_cols if pd.notna(Mev_full[c].iloc[-1])]
+            if not cols:
+                raise ValueError("eval row has NaNs for all selected cols (pre-PCA)")
+
+            Mtr_sel = Mtr2[cols].dropna(axis=0)
+            ytr3    = ytr2.loc[Mtr_sel.index]
+            if Mtr_sel.shape[0] < 10:
+                raise ValueError("too few complete rows after dropna (pre-PCA)")
+
+            Mev_sel = Mev_full[cols]
+            ytr2    = ytr3
+            Mtr_fin, Mev_fin = Mtr_sel, Mev_sel
+
         else:
-            Mtr = build_engineered_matrix(Xtr, base_features, fe_spec)
+            Mtr      = build_engineered_matrix(Xtr, base_features, fe_spec)
             Mev_full = build_engineered_matrix(Xev, base_features, fe_spec).iloc[[-1], :]
-            if Mtr.shape[1]==0: raise ValueError("no cols")
+            if Mtr.shape[1] == 0:
+                raise ValueError("no cols")
             Mtr2, ytr2 = _align_after_engineering(Mtr, y.iloc[:t+1])
-            eng_cols = select_engineered_features(Mtr2, ytr2, fs_cfg)
-            if len(eng_cols)==0: raise ValueError("no selected cols")
-            Mtr_sel = Mtr2[eng_cols]; Mev_sel = Mev_full[eng_cols]
-            Mtr_fin, Mev_fin = apply_pca_train_transform(Mtr_sel, Mev_sel, pca_n=pca_n, pca_var=pca_var, pca_solver=fe_spec.get("pca_solver","auto"))
+            eng_cols   = select_engineered_features(Mtr2, ytr2, fs_cfg)
+            if len(eng_cols) == 0:
+                raise ValueError("no selected cols")
+
+            cols = [c for c in eng_cols if pd.notna(Mev_full[c].iloc[-1])]
+            if not cols:
+                raise ValueError("eval row has NaNs for all selected cols (post-PCA)")
+
+            Mtr_sel = Mtr2[cols].dropna(axis=0)
+            ytr3    = ytr2.loc[Mtr_sel.index]
+            if Mtr_sel.shape[0] < 10:
+                raise ValueError("too few complete rows after dropna (post-PCA)")
+
+            Mev_sel = Mev_full[cols]
+            ytr2    = ytr3
+
+            if (pca_n is not None) or (pca_var is not None):
+                Mtr_fin, Mev_fin = apply_pca_train_transform(
+                    Mtr_sel, Mev_sel,
+                    pca_n=pca_n, pca_var=pca_var,
+                    pca_solver=fe_spec.get("pca_solver", "auto")
+                )
+            else:
+                Mtr_fin, Mev_fin = Mtr_sel, Mev_sel
 
         if design_cache is not None:
             design_cache[key] = (Mtr_fin, ytr2, Mev_fin, eng_cols)
 
     est = build_estimator(model_name, dict(model_params))
-    used_es = False;
+    used_es = False
     best_iter = None
     es_rounds = int(getattr(train_eval_cfg, "early_stopping_rounds", 0) or 0)
+
     if train_eval_cfg and es_rounds > 0 and supports_es(model_name):
         dev_tail = max(0, int(train_eval_cfg.dev_tail))
-        if dev_tail>0 and len(Mtr_fin)>dev_tail:
-            Xtr = Mtr_fin.iloc[:-dev_tail,:]; ytr2a = ytr2.iloc[:-dev_tail]
-            Xdv = Mtr_fin.iloc[-dev_tail:,:];  ydv  = ytr2.iloc[-dev_tail:]
+        if dev_tail > 0 and len(Mtr_fin) > dev_tail:
+            Xtr2  = Mtr_fin.iloc[:-dev_tail, :]
+            ytr2a = ytr2.iloc[:-dev_tail]
+            Xdv   = Mtr_fin.iloc[-dev_tail:, :]
+            ydv   = ytr2.iloc[-dev_tail:]
             try:
-                est.fit(Xtr, ytr2a, eval_set=[(Xdv, ydv)], early_stopping_rounds=int(train_eval_cfg.early_stopping_rounds))
-                used_es=True
-                best_iter = getattr(est,"best_iteration_",None) or getattr(est,"best_iteration",None)
-            except:
+                est.fit(Xtr2, ytr2a, eval_set=[(Xdv, ydv)],
+                        early_stopping_rounds=es_rounds)
+                used_es  = True
+                best_iter = getattr(est, "best_iteration_", None) or getattr(est, "best_iteration", None)
+            except Exception:
                 est.fit(Mtr_fin, ytr2)
         else:
             est.fit(Mtr_fin, ytr2)
@@ -158,7 +202,7 @@ def score_config_for_next_step(
         est.fit(Mtr_fin, ytr2)
 
     yhat = float(np.asarray(est.predict(Mev_fin))[0])
-    val  = float(metric_fn([y.iloc[t+1]],[yhat]))
+    val  = float(metric_fn([y.iloc[t+1]], [yhat]))
     return val, yhat, eng_cols, {"used_es": used_es, "best_iteration": None if best_iter is None else int(best_iter)}
 
 # --- FE candidates ---
