@@ -16,6 +16,7 @@ from .features import (
 )
 from .evaluation import rmse
 
+
 # ------------------------ Hilfen ------------------------
 
 @dataclass
@@ -33,6 +34,7 @@ def _mk_paths(model_name: str, cfg: GlobalConfig) -> RunState:
     return RunState(cfg=cfg, model_name=model_name,
                     out_stageA=outs["stageA"], out_stageB=outs["stageB"])
 
+
 # ------------------------ Core: ein Origin schätzen ------------------------
 
 def _fit_predict_one_origin(
@@ -48,103 +50,108 @@ def _fit_predict_one_origin(
     """
     Train-only Design bis inkl. Origin t (0-basiert), fit Modell, prognostiziere y_{t+1}.
     Wichtig: I_t = t_origin + 1 (Anzahl verfügbarer Zeilen bis inkl. t_origin).
+    FE- und DR-Parameter werden 'effektiv' aus model_hp (falls vorhanden) oder cfg gelesen.
     """
     I_t = t_origin + 1  # 1-basiertes Zählen für die FE-Helfer
 
-    # 1) Lag-Selektion (prewhitened, einheitliche Korrelation)
+    # -------------------- Effektive FE/DR-Parameter pro Konfiguration --------------------
+    # Lags
+    L_eff = tuple(model_hp.get("lag_candidates", getattr(cfg, "lag_candidates", (1, 2, 3, 6, 12))))
+    topk_lags_eff = int(model_hp.get("top_k_lags_per_feature", getattr(cfg, "top_k_lags_per_feature", 1)))
+
+    # Short smoother
+    use_rm3_eff = bool(model_hp.get("use_rm3", getattr(cfg, "use_rm3", False)))
+
+    # Screening / Redundanz
+    k1_topk_eff = int(model_hp.get("k1_topk", getattr(cfg, "k1_topk", 200)))
+    screen_threshold_eff = model_hp.get("screen_threshold", getattr(cfg, "screen_threshold", None))
+    redundancy_method_eff = str(model_hp.get("redundancy_method", getattr(cfg, "redundancy_method", "greedy")))
+    redundancy_param_eff = float(model_hp.get("redundancy_param", getattr(cfg, "redundancy_param", 0.90)))
+
+    # DR
+    dr_method_eff = str(model_hp.get("dr_method", getattr(cfg, "dr_method", "none")))
+    pca_var_target_eff = float(model_hp.get("pca_var_target", getattr(cfg, "pca_var_target", 0.95)))
+    pca_kmax_eff = int(model_hp.get("pca_kmax", getattr(cfg, "pca_kmax", 50)))
+    pls_components_eff = int(model_hp.get("pls_components", getattr(cfg, "pls_components", 4)))
+
+    # -------------------- 1) Lag-Selektion --------------------
     lag_map, _, D, taus = select_lags_per_feature(
-        X=X, y=y, I_t=I_t, L=list(cfg.lag_candidates), k=int(cfg.top_k_lags_per_feature),
+        X=X, y=y, I_t=I_t, L=L_eff, k=topk_lags_eff,
         corr_spec=corr_spec, seasonal_policy=seasonal
     )
 
-    # 2) Feature Engineering (Original + gewählte Lags) und optional RM3
+    # -------------------- 2) Feature Engineering --------------------
     X_eng = build_engineered_matrix(X, lag_map)
-    if getattr(cfg, "use_rm3", False):
+    if use_rm3_eff:
         X_eng = apply_rm3(X_eng)
 
-    # 3) Screening K1 (prewhitened) auf Trainingsfenster
-    keep_cols, _scores = screen_k1(
+    # -------------------- 3) Screening K1 (prewhitened) --------------------
+    keep_cols, scores = screen_k1(
         X_eng=X_eng, y=y, I_t=I_t, corr_spec=corr_spec, D=D, taus=taus,
-        k1_topk=int(cfg.k1_topk), threshold=getattr(cfg, "screen_threshold", None)
+        k1_topk=k1_topk_eff, threshold=screen_threshold_eff
     )
     X_sel = X_eng.loc[:, keep_cols]
 
-    # 4) Redundanzreduktion (prewhitened)
-    if getattr(cfg, "redundancy_method", "greedy") == "greedy":
-        kept = redundancy_reduce_greedy(X_sel, corr_spec, D, taus, float(cfg.redundancy_param))
+    # -------------------- 4) Redundanzreduktion --------------------
+    if redundancy_method_eff == "greedy":
+        kept = redundancy_reduce_greedy(
+            X_sel, corr_spec, D, taus, redundancy_param_eff, scores=scores
+        )
         X_red = X_sel.loc[:, kept]
     else:
-        # Platzhalter für Cluster-Variante
+        # Platzhalter: Cluster/mRMR-Implementierung könnte hier angeschlossen werden
         X_red = X_sel
 
+    # -------------------- 5) Head-Trim / Train-Design --------------------
+    def _lag_of(col):
+        try:
+            return int(str(col).split("__lag")[-1])
+        except Exception:
+            return 0
 
-    # ---------------------------------------------------------
-    # maximal verwendeter Lag (über alle Features)
-    try:
-        max_lag_used = max([lag for lags in lag_map.values() for lag in lags if lag is not None], default=0)
-    except ValueError:
-        max_lag_used = 0
-    # Zusatzfenster für RM3 (Fenster 3 → braucht 2 frühere Perioden)
-    rm_extra = 2 if getattr(cfg, "use_rm3", False) else 0
+    max_lag_used = max([_lag_of(c) for c in X_red.columns] + [0])
+    rm_extra = 2 if use_rm3_eff else 0  # RM3 (Fenster 3) braucht 2 zusätzliche Perioden
     head_needed = max_lag_used + rm_extra
 
-    if head_needed > 0:
-        taus_model = taus[taus - head_needed >= 0]
-    else:
-        taus_model = taus
-
+    taus_model = taus[taus - head_needed >= 0] if head_needed > 0 else taus
     if len(taus_model) == 0:
-        # Fallback: wenigstens die letzte gültige Zeile
         taus_model = taus[-1:].copy()
-    # Trainingsdesign exakt auf getrimmte τ
-    X_red_tr = X_red.iloc[taus_model, :].copy()
+
+    X_tr = X_red.iloc[taus_model, :].copy()
     y_tr = y.shift(-1).iloc[taus_model]
 
     # Eval-Design: Zeile t_origin
     x_eval = X_red.iloc[[t_origin], :].copy()
 
-    # =========================================================
-
-    # 7) Target-only Blöcke nur wenn explizit aktiviert (hier nur Eval-Row angehängt)
+    # -------------------- 6) (Optional) Target-only Blöcke (Eval only; bewusst 'deaktiv' im Train) --------------------
     if getattr(cfg, "use_target_blocks", False):
         z_ts = tsfresh_block(y, I_t=I_t, W=12)   # inline @ t
         z_ch = chronos_block(y, I_t=I_t, W=12)
         x_eval = pd.concat([x_eval.reset_index(drop=True),
                             z_ts.reset_index(drop=True),
                             z_ch.reset_index(drop=True)], axis=1)
-        # Hinweis: Für volle Wirkung optional auch trainseitig integrieren.
 
-    # 8) DR fit (train-only) und anwenden
+    # -------------------- 7) DR fit (train-only) und anwenden --------------------
     dr_map = fit_dr(
-        X_red_tr,
-        method=getattr(cfg, "dr_method", "none"),
-        pca_var_target=float(getattr(cfg, "pca_var_target", 0.95)),
-        pca_kmax=int(getattr(cfg, "pca_kmax", 50)),
-        pls_components=int(getattr(cfg, "pls_components", 4))
+        X_tr,
+        method=dr_method_eff,
+        pca_var_target=pca_var_target_eff,
+        pca_kmax=pca_kmax_eff,
+        pls_components=pls_components_eff
     )
-    if getattr(cfg, "dr_method", "none") == "pls":
-        X_tr_dr = transform_dr(dr_map, X_red_tr, y=y_tr, fit_pls=True)
-        x_ev_dr = transform_dr(dr_map, x_eval, y=None, fit_pls=False)
+    if dr_method_eff == "pls":
+        Xb_tr = transform_dr(dr_map, X_tr, y=y_tr, fit_pls=True)
+        Xb_ev = transform_dr(dr_map, x_eval, y=None, fit_pls=False)
     else:
-        X_tr_dr = transform_dr(dr_map, X_red_tr)
-        x_ev_dr = transform_dr(dr_map, x_eval)
+        Xb_tr = transform_dr(dr_map, X_tr)
+        Xb_ev = transform_dr(dr_map, x_eval)
 
-    # 9) Modell fitten & Prognose
+    # -------------------- 8) Modell fitten & Prognose --------------------
     model = model_ctor(model_hp)
-    # X_tr, y_tr sind das train-only Design + Ziel (N x P)
-    # --- Design-Sanity vor dem Fit (train-only) ---
-    import numpy as np, pandas as pd
-
-    import numpy as np, pandas as pd
-
-    # --- Quick Corr Diagnostic: prüft, ob X_tr_dr überhaupt Signal zu y_tr trägt ---
-    import numpy as np, pandas as pd
-
-
-
-    model.fit(np.asarray(X_tr_dr), np.asarray(y_tr).ravel())
-    y_hat = float(model.predict_one(np.asarray(x_ev_dr)))
+    model.fit(np.asarray(Xb_tr), np.asarray(y_tr).ravel())
+    y_hat = float(model.predict_one(np.asarray(Xb_ev)))
     return y_hat
+
 
 # ------------------------ Stage A ------------------------
 
@@ -159,10 +166,14 @@ def run_stageA(
     min_survivors_per_block: int = 2,
 ) -> List[Dict[str, Any]]:
     """
-    Stage A mit drei Blöcken. Pro Block: walk-forward Re-Schätzung je Konfiguration,
+    Stage A mit drei Blöcken. Pro Block: je Konfiguration einmalig auf dem Trainingsfenster bis
+    train_end fitten und mit demselben Fit über den gesamten Block OOS vorhersagen.
     CSV-Exports (preds, rmse, configs), dann Halving mit Untergrenze → nächste Stufe.
-    Am Ende: gefrorene Shortlist (Top-K).
+    Am Ende: gefrorene Shortlist (Top-K nach Median-RMSE über die drei Blöcke).
     """
+    agg_scores: Dict[str, List[float]] = {}
+    hp_by_key: Dict[str, Any] = {}
+
     rs = _mk_paths(model_name, cfg)
     T = len(y)
     survivors: List[Dict[str, Any]] = list(model_grid)
@@ -177,28 +188,101 @@ def run_stageA(
         preds_records: List[Dict[str, Any]] = []
         rmse_records:  List[Dict[str, Any]] = []
 
-        # Bewertung je Kandidat
+        # Bewertung je Kandidat (ein Fit pro Block & Config)
         for i, hp in enumerate(survivors, start=1):
             _progress(f"  - Config {i}/{len(survivors)}: {hp}")
             y_true_block, y_pred_block = [], []
             n_months = (oos_end_eff - oos_start + 1)
 
-            for t in range(oos_start - 1, oos_end_eff + 0):  # 0-based t; letztes t hat y_{t+1} im Bereich
-                y_hat = _fit_predict_one_origin(
-                    model_ctor=model_ctor, model_hp=hp,
-                    X=X, y=y, t_origin=t, cfg=cfg,
-                    corr_spec=cfg.corr_spec, seasonal=cfg.nuisance_seasonal
+            # -------------------- Effektive FE/DR-Parameter (nur lesen; Fit bleibt unten zentral) --------------------
+            L_eff = tuple(hp.get("lag_candidates", getattr(cfg, "lag_candidates", (1, 2, 3, 6, 12))))
+            topk_lags_eff = int(hp.get("top_k_lags_per_feature", getattr(cfg, "top_k_lags_per_feature", 1)))
+            use_rm3_eff = bool(hp.get("use_rm3", getattr(cfg, "use_rm3", True)))
+            k1_topk_eff = int(hp.get("k1_topk", getattr(cfg, "k1_topk", 200)))
+            screen_threshold_eff = hp.get("screen_threshold", getattr(cfg, "screen_threshold", None))
+            redundancy_method_eff = str(hp.get("redundancy_method", getattr(cfg, "redundancy_method", "greedy")))
+            redundancy_param_eff = float(hp.get("redundancy_param", getattr(cfg, "redundancy_param", 0.90)))
+            dr_method_eff = str(hp.get("dr_method", getattr(cfg, "dr_method", "none")))
+            pca_var_target_eff = float(hp.get("pca_var_target", getattr(cfg, "pca_var_target", 0.95)))
+            pca_kmax_eff = int(hp.get("pca_kmax", getattr(cfg, "pca_kmax", 25)))
+            pls_components_eff = int(hp.get("pls_components", getattr(cfg, "pls_components", 2)))
+
+            # ---- Fit einmalig auf Trainingsfenster bis train_end ----
+            I_t = train_end  # Origin = letztes Trainingsmonth im Block-Setup
+
+            # 1) Lag-Selektions-Map (train-only)
+            lag_map, _, D, taus = select_lags_per_feature(
+                X, y, I_t=I_t, L=L_eff, k=topk_lags_eff,
+                corr_spec=cfg.corr_spec, seasonal_policy=cfg.nuisance_seasonal
+            )
+
+            # 2) Engineer design (lags + optional RM3)
+            X_eng = build_engineered_matrix(X, lag_map)
+            if use_rm3_eff:
+                X_eng = apply_rm3(X_eng)
+
+            # 3) Prewhitened Screening (train-only)
+            keep_cols, scores = screen_k1(
+                X_eng, y, I_t, cfg.corr_spec, D, taus,
+                k1_topk=k1_topk_eff, threshold=screen_threshold_eff
+            )
+            X_sel = X_eng.loc[:, keep_cols]
+
+            # 4) Redundanz (train-only), Greedy nach absteigendem Score
+            if redundancy_method_eff == "greedy":
+                kept = redundancy_reduce_greedy(
+                    X_sel, cfg.corr_spec, D, taus, redundancy_param_eff, scores=scores
                 )
+                X_red = X_sel.loc[:, kept]
+            else:
+                X_red = X_sel  # (Cluster/mRMR könnte hier später ergänzt werden)
+
+            # 5) Head-Trim nach maximalem Lag
+            def _lag_of(col):
+                try:
+                    return int(str(col).split("__lag")[-1])
+                except Exception:
+                    return 0
+            head_needed = max([_lag_of(c) for c in X_red.columns] + [0])
+            taus_model = taus[taus - head_needed >= 0] if head_needed > 0 else taus
+            if len(taus_model) == 0:
+                taus_model = taus[-1:].copy()
+
+            X_tr = X_red.iloc[taus_model, :].copy()
+            y_tr = y.shift(-1).iloc[taus_model]
+
+            # 6) DR fit (train-only) und Train-Projection
+            dr_map = fit_dr(
+                X_tr,
+                method=dr_method_eff,
+                pca_var_target=pca_var_target_eff,
+                pca_kmax=pca_kmax_eff,
+                pls_components=pls_components_eff
+            )
+            Xb_tr = transform_dr(dr_map, X_tr, y_tr, fit_pls=(dr_method_eff == "pls"))
+
+            # 7) Modell einmal fitten (mit internem Dev-Tail für ES im Backend)
+            model = model_ctor(hp)
+            model.fit(Xb_tr, y_tr.to_numpy(dtype=float))
+
+            # ---- Vorhersagen für den gesamten Block mit demselben Fit ----
+            for t in range(oos_start - 1, oos_end_eff + 0):  # 0-based t
+                x_eval = X_red.iloc[[t], :].copy()
+                Xb_eval = transform_dr(dr_map, x_eval, fit_pls=False)
+                y_hat = model.predict_one(Xb_eval)
+
                 y_true = float(y.iloc[t + 1])
                 y_true_block.append(y_true)
                 y_pred_block.append(float(y_hat))
 
                 done = len(y_true_block)
-                _progress(f"    · Month {done}/{n_months} processed | running RMSE={rmse(np.array(y_true_block), np.array(y_pred_block)):.4f}")
+                _progress(
+                    f"    · Month {done}/{n_months} processed | running...MSE={rmse(np.array(y_true_block), np.array(y_pred_block)):.4f}"
+                )
 
                 preds_records.append({
                     "block": f"block{block_id}", "t": t,
-                    "date_t_plus_1": y.index[t+1].strftime("%Y-%m-%d"),
+                    "date_t_plus_1": y.index[t + 1].strftime("%Y-%m-%d"),
                     "y_true": y_true, "y_pred": y_hat,
                     "model": model_name, "config_id": i
                 })
@@ -209,6 +293,10 @@ def run_stageA(
                 "rmse": score, "n_oos": len(y_true_block),
                 "train_end": train_end, "oos_start": oos_start, "oos_end": oos_end_eff
             })
+            # Aggregation für Shortlist-Auswahl:
+            key = json.dumps(hp, sort_keys=True)
+            agg_scores.setdefault(key, []).append(float(score))
+            hp_by_key[key] = hp
 
         # CSV-Exports pro Block
         preds_df = pd.DataFrame(preds_records)
@@ -234,14 +322,26 @@ def run_stageA(
         survivors = [hp for i, hp in enumerate(survivors, start=1) if i in keep_ids]
         _progress(f"[Stage A][Block {block_id}] kept {len(survivors)} configs (floor={min_survivors_per_block}).")
 
-    # Finale Freeze: Top-K
-    k_final = min(int(keep_top_k_final), len(survivors))
-    shortlist = survivors[:k_final]
+    # Finale Freeze: Top-K anhand aggregierter Block-Scores (Median)
+    def _key(hp):
+        return json.dumps(hp, sort_keys=True)
+
+    keys_surv = [_key(hp) for hp in survivors]
+    med_list: List[Tuple[float, str]] = []
+    for k in keys_surv:
+        vals = agg_scores.get(k, [])
+        med = float(np.median(vals)) if len(vals) else float('inf')
+        med_list.append((med, k))
+    med_list.sort(key=lambda z: z[0])
+    ordered = [hp_by_key[k] for (_, k) in med_list]
+    k_final = min(int(keep_top_k_final), len(ordered))
+    shortlist = ordered[:k_final]
 
     # Shortlist persistieren
     (rs.out_stageA / "shortlist.json").write_text(json.dumps(shortlist, indent=2))
     _progress(f"[Stage A] Shortlist saved with {len(shortlist)} configs.")
     return shortlist
+
 
 # ------------------------ Stage B ------------------------
 
@@ -255,18 +355,24 @@ def run_stageB(
     max_months: Optional[int] = None
 ) -> None:
     """
-    Stage B mit gefrorener Shortlist. Pro Monat: alle Kandidaten evaluieren,
-    Rolling-RMSE über Policy-Fenster, Guardrails (Gain + Cooldown), CSV-Exports.
+    Stage B mit gefrorener Shortlist. Pro Monat: alle Kandidaten evaluieren.
+    Auswahl/Messung über exponentiell gewichtete Fenster-Fehler (decayed metric),
+    Guardrails (Gain + Cooldown), CSV-Exports.
     Zusätzlich wird am Ende eine summary.csv mit Overall-RMSE (pro Config & aktivem Pfad) geschrieben.
     """
     rs = _mk_paths(model_name, cfg)
     T = len(y)
 
+    # Policy-Parameter
+    window = int(getattr(cfg, "policy_window", 12))                # Fensterlänge (Monate)
+    decay = float(getattr(cfg, "policy_decay", 0.95))              # Zerfallsfaktor λ in (0,1)
+    gain_min = float(getattr(cfg, "policy_gain_min", 0.03))        # Mindest-Gewinn ggü. incumbent
+    cooldown = int(getattr(cfg, "policy_cooldown", 3))             # Cooldown (Monate)
+    selection_mode = str(getattr(cfg, "selection_mode", "decayed_best")).lower()
+    weight_floor = float(getattr(cfg, "weight_floor", 1e-6))       # für evtl. Ensemble-Gewichte
+
     active_idx = 0
     last_switch_t: Optional[int] = None
-    window = int(getattr(cfg, "policy_window", 12))
-    gain_min = float(getattr(cfg, "policy_gain_min", 0.03))
-    cooldown = int(getattr(cfg, "policy_cooldown", 3))
 
     monthly_dir = rs.out_stageB / "monthly"
     monthly_dir.mkdir(parents=True, exist_ok=True)
@@ -277,14 +383,27 @@ def run_stageB(
     if max_months is not None:
         months_iter = months_iter[:max_months]
 
-    # Rolling-Fehler pro Config
+    # Rolling-Fehler (Liste von SEs) pro Config
     rolling_errors: Dict[int, List[float]] = {i: [] for i in range(len(shortlist))}
+
+    def _wrmse(i: int) -> float:
+        """Exponentiell gewichtete Fenster-RMSE für Config i (höheres Gewicht auf jüngere Monate)."""
+        arr = rolling_errors[i]
+        n = len(arr)
+        if n == 0:
+            return float("inf")
+        # arr ist chronologisch: älteste ... neueste (wir append() und pop(0))
+        # Gewichte: älteste λ^(n-1), ..., neueste λ^0 = 1.0
+        w = np.array([decay ** (n - 1 - k) for k in range(n)], dtype=float)
+        se = np.array(arr, dtype=float)
+        wmse = float(np.average(se, weights=w))
+        return float(np.sqrt(wmse))
 
     for t in months_iter:
         _progress(f"[Stage B] Month origin t={t} | evaluating {len(shortlist)} configs | active={active_idx+1}")
         y_truth = float(y.iloc[t + 1])
 
-        # Vorhersagen für alle Kandidaten
+        # Vorhersagen für alle Kandidaten (jeweils inkl. FE/DR aus hp)
         yhat_by_cfg = []
         for i, hp in enumerate(shortlist):
             y_hat = _fit_predict_one_origin(
@@ -295,26 +414,37 @@ def run_stageB(
             se = (y_truth - y_hat) ** 2
             yhat_by_cfg.append((i, y_hat, se))
 
-        # Rolling-Fehler aktualisieren
+        # Rolling-Fehler aktualisieren (Fenstergröße begrenzen)
         for i, _, se in yhat_by_cfg:
             rolling_errors[i].append(se)
             if len(rolling_errors[i]) > window:
+                # ältesten Eintrag entfernen
                 rolling_errors[i].pop(0)
 
-        # Fenster-RMSE
-        def _rm(i: int) -> float:
-            arr = rolling_errors[i]
-            return float(np.sqrt(np.mean(arr))) if len(arr) > 0 else np.inf
+        # ---- Auswahl nach decayed metric ----
+        wrmse_win = [ _wrmse(i) for i in range(len(shortlist)) ]
 
-        inc_rmse = _rm(active_idx)
-        rmse_win = [ _rm(i) for i in range(len(shortlist)) ]
-        new_idx = int(np.argmin(rmse_win))
-        new_rmse = rmse_win[new_idx]
+        if selection_mode == "decayed_ensemble":
+            # Optionaler Ensemble-Pfad (gewichtetes Mittel mit inversen decayed errors)
+            eps = 1e-12
+            inv = np.array([1.0 / (eps + (wrmse if np.isfinite(wrmse) else 1e6)) for wrmse in wrmse_win], dtype=float)
+            inv = np.maximum(inv, weight_floor)
+            w = inv / np.sum(inv)
+            # (Wir behalten weiterhin 'active_idx' für Logging/Guardrails; Use-Case: Ensemble nur zur Stabilisierung)
+            new_idx = int(np.argmax(w))  # „repräsentativer“ Index (größtes Gewicht)
+            new_rmse = float(np.sum(w * np.array([_wrmse(i) for i in range(len(shortlist))], dtype=float)))
+        else:
+            # Standard: decayed_best – nimm die beste einzelne Konfiguration
+            new_idx = int(np.argmin(wrmse_win))
+            new_rmse = wrmse_win[new_idx]
+
+        inc_rmse = wrmse_win[active_idx]
 
         rel_gain = 0.0
         if np.isfinite(inc_rmse) and np.isfinite(new_rmse) and inc_rmse > 0:
             rel_gain = 1.0 - (new_rmse / inc_rmse)
 
+        # Guardrails + Cooldown
         can_switch = (new_idx != active_idx) and (rel_gain >= gain_min)
         if last_switch_t is not None:
             can_switch = can_switch and ((t - last_switch_t) >= cooldown)
@@ -331,21 +461,26 @@ def run_stageB(
                 "t": t, "date_t_plus_1": y.index[t+1].strftime("%Y-%m-%d"),
                 "y_true": y_truth, "y_pred": y_hat,
                 "model": model_name, "config_id": i+1,
-                "is_active": (i == active_idx)
+                "is_active": (i == active_idx),
+                "wrmse_window": wrmse_win[i],
+                "window_len": len(rolling_errors[i]),
+                "selection_mode": selection_mode
             })
         append_csv(monthly_preds_path, pd.DataFrame(rows))
 
-        # Scores-CSV: RMSE im Policy-Fenster + Guardrail-Flags
+        # Scores-CSV: decayed RMSE im Policy-Fenster + Guardrail-Flags
         rows2 = []
         for i in range(len(shortlist)):
             rows2.append({
                 "t": t, "model": model_name, "config_id": i+1,
-                "rmse_window": rmse_win[i], "window_len": len(rolling_errors[i]),
+                "wrmse_window": wrmse_win[i], "window_len": len(rolling_errors[i]),
                 "active_idx": active_idx + 1,
                 "candidate_best_idx": new_idx + 1,
                 "gain_vs_incumbent": rel_gain if i == new_idx else 0.0,
                 "cooldown": cooldown, "cooldown_ok": (last_switch_t is None) or ((t - (last_switch_t or 0)) >= cooldown),
-                "switched": switched
+                "switched": switched,
+                "selection_mode": selection_mode,
+                "policy_window": window, "policy_decay": decay
             })
         append_csv(monthly_scores_path, pd.DataFrame(rows2))
 

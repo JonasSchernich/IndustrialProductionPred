@@ -215,16 +215,23 @@ def redundancy_reduce_greedy(
     corr_spec: CorrelationSpec,
     D: np.ndarray,
     taus: np.ndarray,
-    threshold: float
+    threshold: float,
+    scores: Optional[Dict[str, float]] = None
 ) -> List[str]:
     """
     Greedy redundancy control on residualized series with NaN-guards.
+    If `scores` are provided (e.g., prewhitened relevance from screening),
+    features are processed in descending score order to preserve relevance.
     """
     if len(taus) == 0 or X_sel.shape[1] == 0:
         return []
 
-    keep: List[str] = []
     feats = list(X_sel.columns)
+    if scores is not None:
+        # sort by descending relevance; missing scores last
+        feats = sorted(feats, key=lambda c: scores.get(c, float('-inf')), reverse=True)
+
+    keep: List[str] = []
 
     # precompute residualized columns (with mean impute if needed)
     rcols: Dict[str, np.ndarray] = {}
@@ -246,6 +253,7 @@ def redundancy_reduce_greedy(
         if ok:
             keep.append(c)
     return keep
+
 
 # ==========================================================
 # Dimensionality Reduction (train-only safe: imputer + scaler + PCA/PLS)
