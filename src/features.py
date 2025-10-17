@@ -1,4 +1,4 @@
-
+# src/features.py
 from __future__ import annotations
 from typing import Optional, Dict, Any, Tuple, List
 import numpy as np
@@ -6,426 +6,377 @@ import pandas as pd
 from dataclasses import dataclass
 from numpy.linalg import lstsq
 
-from .config import CorrelationSpec
+# Falls CorrelationSpec als Dict übergeben wird, robust darauf reagieren
+def _spec_get(spec: Any, key: str, default=None):
+    if isinstance(spec, dict):
+        return spec.get(key, default)
+    return getattr(spec, key, default)
 
 # ==========================================================
-# Utilities
+# Residualisierung & Korrelation
 # ==========================================================
-
-def _seasonal_needed(param):
-    pass
-
-
-# --- replace in src/features.py ---
-
-def _design_nuisance(y: pd.Series, seasonal: str, I_t: int) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Train-only Nuisance-Design D_τ für τ in 0..I_t-1 mit Ziel y_{τ+1}.
-    Saisonale Terme sind DEAKTIVIERT. Es wird nur (1, y_{τ-1}) genutzt.
-    Gibt (D, taus) zurück, wobei taus genau die Indizes der gültigen Trainingspaare sind.
-    """
-    # gültige τ: y_{τ+1} muss existieren, y_{τ-1} muss existieren
-    taus = np.arange(0, I_t)
-    taus = taus[(taus + 1) < I_t]     # y_{τ+1} existiert
-    taus = taus[(taus - 1) >= 0]      # y_{τ-1} existiert
-    if len(taus) == 0:
-        return np.empty((0, 2)), taus
-
-    const = np.ones_like(taus, dtype=float)
-    y_tau_1 = y.shift(1).iloc[taus].to_numpy(dtype=float)  # y_{τ-1}
-    D = np.column_stack([const, y_tau_1])
-    return D, taus
-
-
 
 def _residualize_vec(vec: np.ndarray, D: np.ndarray) -> np.ndarray:
     """
-    OLS residuals of vec on columns of D (adds no intercept; include it in D).
-    If D has zero rows, returns empty array.
+    Residualisiere 'vec' auf D per OLS, train-only.
+    Erwartet: D.shape[0] == len(vec).
     """
-    if D.shape[0] == 0:
-        return np.array([])
+    if D is None or D.size == 0:
+        return vec.astype(float, copy=False)
+    if D.shape[0] != len(vec):
+        raise ValueError(f"D and vec length mismatch: D={D.shape}, vec={len(vec)}")
     beta, *_ = lstsq(D, vec, rcond=None)
     return vec - D @ beta
 
 def _ewma_weights(n: int, lam: float) -> np.ndarray:
-    w = lam ** np.arange(n-1, -1, -1)
-    w = w / w.sum()
-    return w
+    w = lam ** np.arange(n - 1, -1, -1)
+    s = w.sum()
+    if s == 0:
+        return np.ones(n) / n
+    return w / s
 
-def pw_corr(r_x: np.ndarray, r_y: np.ndarray, spec: CorrelationSpec) -> float:
+def _corr_equal_weight(x: np.ndarray, y: np.ndarray) -> float:
+    if len(x) < 2:
+        return 0.0
+    x = x - x.mean()
+    y = y - y.mean()
+    denom = np.sqrt((x @ x) * (y @ y))
+    if denom <= 0:
+        return 0.0
+    return float((x @ y) / denom)
+
+def _corr_ewma(x: np.ndarray, y: np.ndarray, lam: float) -> float:
+    n = len(x)
+    if n < 2:
+        return 0.0
+    w = _ewma_weights(n, lam)
+    xm = (w * x).sum()
+    ym = (w * y).sum()
+    xc = x - xm
+    yc = y - ym
+    num = float((w * xc * yc).sum())
+    den = np.sqrt(float((w * xc * xc).sum()) * float((w * yc * yc).sum()))
+    if den <= 0:
+        return 0.0
+    return num / den
+
+def pw_corr(r_x: np.ndarray, r_y: np.ndarray, spec: Any) -> float:
     """
-    Prewhitened correlation given residuals r_x, r_y.
-    spec.mode = "expanding" → standard correlation (equal weights)
-    spec.mode = "ewma" → EWMA correlation with optional finite window
+    Prewhitened correlation zwischen Residuen r_x, r_y.
+    spec.mode in {"expanding", "ewm"}; bei ewm optional 'lambda'.
     """
     n = min(len(r_x), len(r_y))
-    if n == 0:
+    if n <= 1:
         return 0.0
-    rx = np.asarray(r_x[-n:], dtype=float)
-    ry = np.asarray(r_y[-n:], dtype=float)
-
-    # Guard against NaNs
-    m = ~(np.isnan(rx) | np.isnan(ry))
-    if m.sum() < 2:
-        return 0.0
-    rx, ry = rx[m], ry[m]
-    if rx.std() == 0.0 or ry.std() == 0.0:
-        return 0.0
-
-    mode = spec.get("mode", "expanding")
-    if mode == "expanding":
-        return float(np.corrcoef(rx, ry)[0, 1])
-    else:
-        lam = spec.get("lam", 0.98) or 0.98
-        W = spec.get("window", None)
-        if W is not None and W < len(rx):
-            rx = rx[-W:]
-            ry = ry[-W:]
-        n = len(rx)
-        if n < 2:
-            return 0.0
-        w = _ewma_weights(n, lam)
-        rx_c = rx - np.sum(w * rx)
-        ry_c = ry - np.sum(w * ry)
-        num = np.sum(w * rx_c * ry_c)
-        den = np.sqrt(np.sum(w * rx_c**2) * np.sum(w * ry_c**2))
-        return float(num / den) if den > 0 else 0.0
+    r_x = r_x[-n:].astype(float, copy=False)
+    r_y = r_y[-n:].astype(float, copy=False)
+    mode = _spec_get(spec, "mode", "expanding")
+    if mode == "ewm":
+        lam = float(_spec_get(spec, "lambda", 0.98))
+        return _corr_ewma(r_x, r_y, lam)
+    # expanding (equal weights)
+    return _corr_equal_weight(r_x, r_y)
 
 # ==========================================================
-# Public API: Feature engineering & Screening
+# Lag-Selektion & Engineering
 # ==========================================================
 
-@dataclass
-class FEState:
-    D: np.ndarray
-    taus: np.ndarray
-    lag_map: Dict[int, List[int]]   # per-feature top-k lag(s)
-    scores: Dict[str, float]        # per-column screening scores
+def _nuisance_matrix(y: pd.Series, taus: np.ndarray) -> np.ndarray:
+    """
+    D_tau = (1, y_{tau-1}) für tau in 'taus'. (Intercept + kurzer AR-Bezug)
+    Achtung: y_{tau-1} kann am Kopf NaN sein; dort wird 0 eingesetzt.
+    """
+    y_lag1 = y.shift(1).iloc[taus].to_numpy(dtype=float)
+    y_lag1 = np.nan_to_num(y_lag1, nan=0.0, posinf=0.0, neginf=0.0)
+    ones = np.ones((len(taus), 1), dtype=float)
+    return np.concatenate([ones, y_lag1.reshape(-1, 1)], axis=1)
 
 def select_lags_per_feature(
     X: pd.DataFrame,
     y: pd.Series,
     I_t: int,
-    L: List[int],
+    L: Tuple[int, ...],
     k: int,
-    corr_spec: CorrelationSpec,
-    seasonal_policy: str = "auto"
-) -> Tuple[Dict[int, List[int]], Dict[Tuple[int,int], float], np.ndarray, np.ndarray]:
+    corr_spec: Any,
+) -> Tuple[Dict[str, List[int]], Dict[str, float], np.ndarray, np.ndarray]:
     """
-    Returns (lag_map, lag_scores, D, taus).
-    lag_map[j] = list of selected lags for feature j (length <= k)
-    lag_scores[(j, lag)] = abs prewhitened corr score
+    Wählt je Feature die Top-k Lags aus L anhand |corr(x_{j,τ-ℓ}, y_{τ+1})| auf τ=0..I_t-1.
+    Rückgabe:
+      - lag_map: {col: [lag1, lag2, ...]}
+      - scores_any: optional (hier: max-Score je Feature)
+      - D: Nuisance-Matrix für τ=0..I_t-1
+      - taus: np.arange(I_t)
     """
-    D, taus = _design_nuisance(y, seasonal_policy, I_t)
-    if len(taus) == 0:
-        return {}, {}, D, taus
+    taus = np.arange(int(I_t), dtype=int)  # 0..t_origin
+    D = _nuisance_matrix(y, taus)
 
+    lag_map: Dict[str, List[int]] = {}
+    scores_any: Dict[str, float] = {}
+
+    # Zielreihe (y_{τ+1}) für Trainingstau
     y_next = y.shift(-1).iloc[taus].to_numpy(dtype=float)
     r_y = _residualize_vec(y_next, D)
 
-    lag_map: Dict[int, List[int]] = {}
-    lag_scores: Dict[Tuple[int,int], float] = {}
-
-    taus_min = taus.min() if len(taus) else 0
-
-    for j, col in enumerate(X.columns):
-        scores_j = []
-        x = X[col].to_numpy(dtype=float)
-        # simple per-feature mean for imputation if needed (train-only)
-        col_mean = np.nanmean(x[:I_t]) if np.isnan(x[:I_t]).any() else None
+    for col in X.columns:
+        # Scores je Lag sammeln
+        lag_scores: List[Tuple[float, int]] = []
+        x_full = X[col].to_numpy(dtype=float)
 
         for lag in L:
-            # ensure availability of x_{tau-lag}
-            valid = taus[taus - lag >= 0] if (taus_min - lag < 0) else taus
-            if len(valid) == 0:
-                continue
-            x_l = x[valid - lag]
-            # impute NaNs in x_l with train-only mean if necessary
-            if col_mean is not None and np.isnan(x_l).any():
-                x_l = np.where(np.isnan(x_l), col_mean, x_l)
-            # align D rows to the chosen valid taus
-            D_slice = D[D.shape[0]-len(valid):] if len(valid) != len(taus) else D
-            r_x = _residualize_vec(x_l, D_slice)
-            score = abs(pw_corr(r_x, r_y[-len(r_x):], corr_spec))
-            scores_j.append((lag, score))
-            lag_scores[(j, lag)] = score
+            # x_{j,τ-ℓ} über die Indizes τ: shift nach hinten
+            x_shifted = pd.Series(x_full).shift(lag).iloc[taus].to_numpy(dtype=float)
+            x_shifted = np.nan_to_num(x_shifted, nan=0.0, posinf=0.0, neginf=0.0)
+            r_x = _residualize_vec(x_shifted, D)
+            sc = abs(pw_corr(r_x, r_y, corr_spec))
+            lag_scores.append((sc, lag))
 
-        scores_j.sort(key=lambda z: z[1], reverse=True)
-        lag_map[j] = [lag for lag, _ in scores_j[:k]] if scores_j else []
+        # Top-k Lags wählen
+        lag_scores.sort(key=lambda z: z[0], reverse=True)
+        chosen = [lag for (_, lag) in lag_scores[:max(1, int(k))]]
+        lag_map[col] = sorted(set(chosen))
+        scores_any[col] = lag_scores[0][0] if lag_scores else 0.0
 
-    return lag_map, lag_scores, D, taus
+    return lag_map, scores_any, D, taus
 
-def apply_rm3(X: pd.DataFrame) -> pd.DataFrame:
-    # causal RM3 (min_periods=1) – keine NaN-Erzeugung am Fensteranfang
-    return X.rolling(3, min_periods=1).mean()
+def build_engineered_matrix(X: pd.DataFrame, lag_map: Dict[str, List[int]]) -> pd.DataFrame:
+    """
+    Erzeugt Spalten {col__lagℓ} für alle in lag_map gewählten Lags.
+    (Nur gelaggte Spalten; Head-Trim erfolgt später.)
+    """
+    out = {}
+    for col, lags in lag_map.items():
+        s = X[col]
+        for lag in lags:
+            out[f"{col}__lag{lag}"] = s.shift(lag).astype(float)
+    X_eng = pd.DataFrame(out, index=X.index)
+    return X_eng
 
-def build_engineered_matrix(
-    X: pd.DataFrame, lag_map: Dict[int, List[int]]
-) -> pd.DataFrame:
-    cols = []
-    for j, col in enumerate(X.columns):
-        # include original
-        cols.append(pd.Series(X[col].values, index=X.index, name=f"{col}__lag0"))
-        for lag in lag_map.get(j, []):
-            if lag > 0:
-                cols.append(pd.Series(X[col].shift(lag).values, index=X.index, name=f"{col}__lag{lag}"))
-    return pd.concat(cols, axis=1)
+def apply_rm3(X_eng: pd.DataFrame) -> pd.DataFrame:
+    """
+    Kausale RM3-Glättung auf allen Spalten (Fenster=3, min_periods=1).
+    Hinweis: Head-Trim in der Pipeline berücksichtigt den RM3-Offset (2).
+    """
+    return X_eng.rolling(window=3, min_periods=1).mean()
+
+# ==========================================================
+# Screening & Redundanz (train-only; prewhitened)
+# ==========================================================
+
+def _align_D_to_taus(D: np.ndarray, taus: np.ndarray) -> np.ndarray:
+    """
+    Align D auf genau len(taus) Zeilen. In der Pipeline ist 'taus' stets eine
+    Suffixmenge (nach Head-Trim). Daher genügt 'von unten' zu schneiden.
+    """
+    n = len(taus)
+    if D.shape[0] == n:
+        return D
+    if D.shape[0] > n:
+        return D[-n:, :]
+    raise ValueError(f"D has fewer rows ({D.shape[0]}) than taus ({n}).")
 
 def screen_k1(
     X_eng: pd.DataFrame,
     y: pd.Series,
     I_t: int,
-    corr_spec: CorrelationSpec,
+    corr_spec: Any,
     D: np.ndarray,
     taus: np.ndarray,
-    k1_topk: int = 50,
-    threshold: Optional[float] = None
+    k1_topk: Optional[int] = 200,
+    threshold: Optional[float] = None,
 ) -> Tuple[List[str], Dict[str, float]]:
     """
-    Prewhitened corr screening with train-only NaN guards.
+    Prewhitened Screening:
+      1) y_next = y_{τ+1} auf 'taus'
+      2) D auf 'taus' alignen
+      3) je Feature: r_x, r_y residualisieren; Score = |corr(r_x, r_y)|
+      4) Top-K nach Score ODER Schwellenfilter
+    Rückgabe: (Liste behaltene Spalten, Mapping col->Score)
     """
-    if len(taus) == 0:
+    if len(taus) == 0 or X_eng.shape[1] == 0:
         return [], {}
 
+    # 1) y_{τ+1}
     y_next = y.shift(-1).iloc[taus].to_numpy(dtype=float)
-    r_y = _residualize_vec(y_next, D)
+
+    # 2) D konsequent slicen
+    D_slice = _align_D_to_taus(D, taus)
+
+    # 3) Ziel-Residual
+    r_y = _residualize_vec(y_next, D_slice)
 
     scores: Dict[str, float] = {}
-    for c in X_eng.columns:
-        xvals = X_eng[c].iloc[taus].to_numpy(dtype=float)
-        # train-only mean imputation for screening
-        if np.isnan(xvals).any():
-            m = np.nanmean(xvals)
-            if np.isnan(m):  # all NaN fallback
-                scores[c] = 0.0
-                continue
-            xvals = np.where(np.isnan(xvals), m, xvals)
-        r_x = _residualize_vec(xvals, D)
-        scores[c] = abs(pw_corr(r_x, r_y, corr_spec))
+    for col in X_eng.columns:
+        xvals = X_eng[col].iloc[taus].to_numpy(dtype=float)
+        xvals = np.nan_to_num(xvals, nan=0.0, posinf=0.0, neginf=0.0)
+        r_x = _residualize_vec(xvals, D_slice)
+        sc = abs(pw_corr(r_x, r_y, corr_spec))
+        scores[col] = sc
 
+    # 4) Auswahl
+    cols = list(X_eng.columns)
     if threshold is not None:
-        keep = [c for c, s in scores.items() if s >= threshold]
+        keep = [c for c in cols if scores.get(c, 0.0) >= float(threshold)]
     else:
-        keep = [c for c, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:k1_topk]]
+        k = int(k1_topk or 0)
+        if k <= 0:
+            keep = []
+        else:
+            keep = [c for c, _ in sorted(scores.items(), key=lambda z: z[1], reverse=True)[:k]]
     return keep, scores
 
 def redundancy_reduce_greedy(
     X_sel: pd.DataFrame,
-    corr_spec: CorrelationSpec,
+    corr_spec: Any,
     D: np.ndarray,
     taus: np.ndarray,
-    threshold: float,
-    scores: Optional[Dict[str, float]] = None
+    redundancy_param: float = 0.90,
+    scores: Optional[Dict[str, float]] = None,
 ) -> List[str]:
     """
-    Greedy redundancy control on residualized series with NaN-guards.
-    If `scores` are provided (e.g., prewhitened relevance from screening),
-    features are processed in descending score order to preserve relevance.
+    Greedy-Redundanzfilter: behalte Spalten in absteigender Score-Reihenfolge,
+    solange |corr_prewhite(r_x_j, r_x_k)| <= redundancy_param für alle bereits
+    behaltenen.
     """
-    if len(taus) == 0 or X_sel.shape[1] == 0:
-        return []
+    if X_sel.shape[1] <= 1:
+        return list(X_sel.columns)
 
-    feats = list(X_sel.columns)
-    if scores is not None:
-        # sort by descending relevance; missing scores last
-        feats = sorted(feats, key=lambda c: scores.get(c, float('-inf')), reverse=True)
+    # D-Align sicherstellen
+    D_slice = _align_D_to_taus(D, taus)
 
-    keep: List[str] = []
+    # Reihenfolge nach Score (oder Alphabet)
+    order = list(X_sel.columns)
+    if scores:
+        order.sort(key=lambda c: scores.get(c, 0.0), reverse=True)
+    else:
+        order.sort()
 
-    # precompute residualized columns (with mean impute if needed)
-    rcols: Dict[str, np.ndarray] = {}
-    for c in feats:
+    # Precompute Residuen aller Kandidaten auf 'taus'
+    R: Dict[str, np.ndarray] = {}
+    for c in order:
         xv = X_sel[c].iloc[taus].to_numpy(dtype=float)
-        if np.isnan(xv).any():
-            m = np.nanmean(xv)
-            if not np.isnan(m):
-                xv = np.where(np.isnan(xv), m, xv)
-        rcols[c] = _residualize_vec(xv, D)
+        xv = np.nan_to_num(xv, nan=0.0, posinf=0.0, neginf=0.0)
+        R[c] = _residualize_vec(xv, D_slice)
 
-    for c in feats:
+    kept: List[str] = []
+    for c in order:
+        r_c = R[c]
         ok = True
-        for k in keep:
-            r = abs(pw_corr(rcols[c], rcols[k], corr_spec))
-            if r >= threshold:
+        for kcol in kept:
+            r_k = R[kcol]
+            dep = abs(pw_corr(r_c, r_k, corr_spec))
+            if dep >= redundancy_param:
                 ok = False
                 break
         if ok:
-            keep.append(c)
-    return keep
-
+            kept.append(c)
+    return kept
 
 # ==========================================================
-# Dimensionality Reduction (train-only safe: imputer + scaler + PCA/PLS)
+# Dimension Reduction (train-only)
 # ==========================================================
-
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
-try:
-    from sklearn.cross_decomposition import PLSRegression
-    _HAS_PLS = True
-except Exception:
-    PLSRegression = None
-    _HAS_PLS = False
 
 @dataclass
-class DRMap:
-    imputer_stats: Optional[Dict[str, Any]]   # {"means": np.ndarray}
-    scaler: Optional[StandardScaler]
-    pca: Optional[PCA]
-    pls: Optional[Any]
-    method: str
-    cols: List[str]                           # columns kept during DR fit
-    pca_k: Optional[int] = None               # retained PCs if PCA
+class _DRMap:
+    method: str = "none"
+    scaler_mean: Optional[np.ndarray] = None
+    scaler_std: Optional[np.ndarray] = None
+    pca_components_: Optional[np.ndarray] = None
+    pls_model: Any = None
+    cols_: Optional[List[str]] = None
 
-def _fit_imputer_train_only(X_tr: pd.DataFrame) -> Dict[str, Any]:
-    """
-    Compute simple train-only column means for imputation.
-    Also returns the list of columns actually used (drops all-NaN columns).
-    """
-    cols = list(X_tr.columns)
-    # Drop all-NaN columns (cannot be imputed meaningfully)
-    mask_all_nan = X_tr.isna().all(axis=0)
-    if mask_all_nan.any():
-        X_tr = X_tr.loc[:, ~mask_all_nan]
-        cols = list(X_tr.columns)
-    means = X_tr.mean(axis=0, skipna=True).to_numpy(dtype=float)
-    return {"means": means, "cols": cols}
+def _fit_standardizer(X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    mu = X.mean(axis=0).to_numpy(dtype=float)
+    sd = X.std(axis=0, ddof=0).replace(0.0, 1.0).to_numpy(dtype=float)
+    sd[sd == 0.0] = 1.0
+    return mu, sd
 
-def _apply_imputer(X: pd.DataFrame, imp: Dict[str, Any]) -> pd.DataFrame:
-    cols = imp["cols"]
-    means = imp["means"]
-    X2 = X.reindex(columns=cols)
-    if X2.shape[1] == 0:
-        return X2
-    arr = X2.to_numpy(dtype=float)
-    # per-column imputation
-    for j in range(arr.shape[1]):
-        col = arr[:, j]
-        m = means[j]
-        # If mean is NaN (shouldn't happen after all-NaN drop), fallback to zero
-        if np.isnan(m):
-            m = 0.0
-        col[np.isnan(col)] = m
-        arr[:, j] = col
-    return pd.DataFrame(arr, index=X2.index, columns=cols)
+def _apply_standardizer(X: pd.DataFrame, mu: np.ndarray, sd: np.ndarray) -> np.ndarray:
+    Z = (X.to_numpy(dtype=float) - mu.reshape(1, -1)) / sd.reshape(1, -1)
+    return Z
 
 def fit_dr(
     X_tr: pd.DataFrame,
     method: str = "none",
     pca_var_target: float = 0.95,
-    pca_kmax: int = 25,
-    pls_components: int = 2
-) -> DRMap:
+    pca_kmax: int = 50,
+    pls_components: int = 4,
+) -> _DRMap:
     """
-    Train-only DR fit with NaN-safe imputation and column alignment.
-    Order: impute(train) -> standardize(train) -> PCA/PLS fit.
+    Fit train-only DR-Objekt. Für 'pca' wird vorher standardisiert.
+    Für 'pls' wird ebenfalls standardisiert und anschließend PLS1 gefittet.
     """
-    # 1) Train-only imputer
-    imp = _fit_imputer_train_only(X_tr)
-    X_imp = _apply_imputer(X_tr, imp)
+    m = _DRMap(method=method, cols_=list(X_tr.columns))
 
-    # 2) Standardize
-    if X_imp.shape[1] > 0:
-        scaler = StandardScaler(with_mean=True, with_std=True).fit(X_imp.values)
-        Xs = scaler.transform(X_imp.values)
-    else:
-        scaler = None
-        Xs = X_imp.values
+    if method == "none":
+        return m
+
+    mu, sd = _fit_standardizer(X_tr)
+    m.scaler_mean, m.scaler_std = mu, sd
 
     if method == "pca":
-        if Xs.shape[1] == 0:
-            return DRMap(imp, scaler, None, None, "pca", imp["cols"], pca_k=0)
-        # fit PCA with at most pca_kmax comps
-        ncomp = int(min(pca_kmax, Xs.shape[1]))
-        pca = PCA(n_components=ncomp, svd_solver="auto", random_state=0).fit(Xs)
-        # enforce variance target by truncation if requested (<1.0)
-        if pca_var_target < 1.0 and pca.explained_variance_ratio_.size > 0:
-            cumsum = np.cumsum(pca.explained_variance_ratio_)
-            k = int(np.searchsorted(cumsum, pca_var_target) + 1)
-            k = max(1, min(k, ncomp))
-        else:
-            k = ncomp
-        return DRMap(imp, scaler, pca, None, "pca", imp["cols"], pca_k=k)
+        from sklearn.decomposition import PCA
+        Z = _apply_standardizer(X_tr, mu, sd)
+        pca = PCA(svd_solver="full")
+        pca.fit(Z)
+        # Anzahl Komponenten nach Varianz-Ziel + Kappung
+        evr = pca.explained_variance_ratio_
+        k = int(np.searchsorted(np.cumsum(evr), pca_var_target) + 1)
+        k = int(min(max(1, k), pca_kmax, Z.shape[1]))
+        m.pca_components_ = pca.components_[:k, :].copy()
+        return m
 
-    elif method == "pls":
-        if not _HAS_PLS:
-            raise RuntimeError("PLS requested but sklearn.cross_decomposition not available.")
-        c = int(max(1, min(pls_components, Xs.shape[1] if Xs.ndim == 2 else 0)))
-        pls = PLSRegression(n_components=c, scale=True) if c > 0 else None
-        # PLS wird (falls fit_pls=True) später mit y im Training gefittet
-        return DRMap(imp, scaler, None, pls, "pls", imp["cols"])
+    if method == "pls":
+        from sklearn.cross_decomposition import PLSRegression
+        Z = _apply_standardizer(X_tr, mu, sd)
+        # PLS1 auf zentriertem y wird beim Transform berücksichtigt
+        pls = PLSRegression(n_components=int(pls_components), scale=False)
+        # Rückgabe speichert Modell; fit erfolgt in transform (mit y)
+        m.pls_model = pls
+        return m
 
-    else:
-        # pass-through (nur Imputer + Scaler)
-        return DRMap(imp, scaler, None, None, "none", imp["cols"])
+    # Fallback: keine DR
+    m.method = "none"
+    return m
 
 def transform_dr(
-    mapper: DRMap,
+    m: _DRMap,
     X: pd.DataFrame,
     y: Optional[pd.Series] = None,
     fit_pls: bool = False
 ) -> np.ndarray:
     """
-    Apply DR map to any matrix (train or eval row): align cols -> impute(train means) -> scale -> project.
-    For PLS: if fit_pls=True, fits PLS on provided (X,y) (training slice); otherwise uses stored pls if present.
+    Wendet DR-Map auf X an (eval: fit_pls=False).
+    Für PLS: beim Train-Aufruf (fit_pls=True) mit y fitten, danach für Eval nur transformieren.
     """
-    # 1) Align to training columns and impute with train-only means
-    X_imp = _apply_imputer(X, {"means": mapper.imputer_stats["means"], "cols": mapper.cols}) if mapper.imputer_stats else X.copy()
+    if m is None or m.method == "none":
+        return X.to_numpy(dtype=float)
 
-    # 2) Scale
-    if mapper.scaler is not None and X_imp.shape[1] > 0:
-        Xs = mapper.scaler.transform(X_imp.values)
-    else:
-        Xs = X_imp.values
+    # Spaltenauswahl konsistent halten
+    Xc = X.loc[:, m.cols_]
 
-    # 3) Project
-    if mapper.method == "pca" and mapper.pca is not None:
-        Z = mapper.pca.transform(Xs)
-        k = mapper.pca_k or Z.shape[1]
-        Z = Z[:, :k]
-        return Z
-    elif mapper.method == "pls" and mapper.pls is not None:
+    Z = _apply_standardizer(Xc, m.scaler_mean, m.scaler_std)
+
+    if m.method == "pca":
+        # Projektion: V_{1:K}^T * Z^T → (n,K)
+        V = m.pca_components_  # shape (K, p)
+        if V is None:
+            return Z  # falls PCA nicht verfügbar, roh standardisiert zurückgeben
+        return (Z @ V.T).astype(float, copy=False)
+
+    if m.method == "pls":
+        if m.pls_model is None:
+            return Z
+        from sklearn.cross_decomposition import PLSRegression
+        pls: PLSRegression = m.pls_model
         if fit_pls:
             if y is None:
-                raise ValueError("transform_dr(..., fit_pls=True) requires y for PLS.")
-            mapper.pls.fit(Xs, y.values if hasattr(y, "values") else np.asarray(y))
-            Z = mapper.pls.transform(Xs)
-            return Z
-        else:
-            # If PLS not fitted (no train call), project if possible; else pass-through
-            try:
-                Z = mapper.pls.transform(Xs)
-                return Z
-            except Exception:
-                return Xs
-    else:
-        return Xs
+                raise ValueError("PLS transform with fit_pls=True requires y.")
+            yv = y.to_numpy(dtype=float).reshape(-1, 1)
+            # y zentrieren (Standard in PLS); Skalen sind bereits in Z
+            yv = yv - yv.mean()
+            pls.fit(Z, yv)
+        T_scores = pls.transform(Z)  # (n, c)
+        return T_scores.astype(float, copy=False)
 
-# ==========================================================
-# Target-only placeholder blocks (can be overridden in notebook)
-# ==========================================================
-
-def tsfresh_block(y: pd.Series, I_t: int, W: int = 12) -> pd.DataFrame:
-    # Simple interpretable stats over last W months
-    start = max(0, I_t - W)
-    window = y.iloc[start:I_t]
-    feats = {
-        "ts_mean": window.mean(),
-        "ts_std": window.std(ddof=0),
-        "ts_ac1": window.autocorr(lag=1) if window.size > 1 else 0.0,
-    }
-    return pd.DataFrame({k: [v] for k, v in feats.items()}, index=[y.index[I_t - 1]])
-
-def chronos_block(y: pd.Series, I_t: int, W: int = 12) -> pd.DataFrame:
-    # Placeholder: summarise last W values as "predictive distribution" moments
-    start = max(0, I_t - W)
-    window = y.iloc[start:I_t]
-    feats = {
-        "ch_mu": window.mean(),
-        "ch_p50": window.median(),
-        "ch_sigma": window.std(ddof=0),
-        "ch_p10": window.quantile(0.1),
-        "ch_p90": window.quantile(0.9),
-    }
-    return pd.DataFrame({k: [v] for k, v in feats.items()}, index=[y.index[I_t - 1]])
+    # Fallback
+    return Z

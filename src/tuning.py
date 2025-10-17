@@ -11,10 +11,50 @@ from .config import GlobalConfig, outputs_for_model
 from .io_timesplits import stageA_blocks, stageB_months, append_csv
 from .features import (
     select_lags_per_feature, build_engineered_matrix, apply_rm3,
-    screen_k1, redundancy_reduce_greedy, fit_dr, transform_dr,
-    tsfresh_block, chronos_block
+    screen_k1, redundancy_reduce_greedy, fit_dr, transform_dr
 )
 from .evaluation import rmse
+from .io_timesplits import load_tsfresh, load_chronos
+
+
+# ------------------------ Module-weiter Cache für Target-only-Blöcke ------------------------
+
+_TSFRESH_CACHE: Optional[pd.DataFrame] = None
+_CHRONOS_CACHE: Optional[pd.DataFrame] = None
+
+def _ensure_target_blocks_loaded() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    """
+    Lädt TSFresh-/Chronos-Features einmalig und cached sie.
+    Gibt (Z_ts, Z_ch) zurück; kann None sein, wenn Files fehlen.
+    """
+    global _TSFRESH_CACHE, _CHRONOS_CACHE
+    if _TSFRESH_CACHE is None:
+        try:
+            _TSFRESH_CACHE = load_tsfresh()
+        except Exception:
+            _TSFRESH_CACHE = None
+    if _CHRONOS_CACHE is None:
+        try:
+            _CHRONOS_CACHE = load_chronos()
+        except Exception:
+            _CHRONOS_CACHE = None
+    return _TSFRESH_CACHE, _CHRONOS_CACHE
+
+def _augment_with_target_blocks(X_base: pd.DataFrame, use_blocks: bool) -> pd.DataFrame:
+    """
+    Hängt (falls aktivierbar) TSFresh- und Chronos-Features per Zeitindex an X_base an.
+    Reindex gewährleistet identische Achsen; keine Refits, keine Shifts → leakage-sicher.
+    """
+    if not use_blocks:
+        return X_base
+    Z_ts, Z_ch = _ensure_target_blocks_loaded()
+    pieces = [X_base]
+    if Z_ts is not None:
+        pieces.append(Z_ts.reindex(X_base.index))
+    if Z_ch is not None:
+        pieces.append(Z_ch.reindex(X_base.index))
+    X_aug = pd.concat(pieces, axis=1)
+    return X_aug
 
 
 # ------------------------ Hilfen ------------------------
@@ -44,9 +84,7 @@ def _fit_predict_one_origin(
     y: pd.Series,
     t_origin: int,
     cfg: GlobalConfig,
-    corr_spec,
-    seasonal: str
-) -> float:
+    corr_spec) -> float:
     """
     Train-only Design bis inkl. Origin t (0-basiert), fit Modell, prognostiziere y_{t+1}.
     Wichtig: I_t = t_origin + 1 (Anzahl verfügbarer Zeilen bis inkl. t_origin).
@@ -77,7 +115,7 @@ def _fit_predict_one_origin(
     # -------------------- 1) Lag-Selektion --------------------
     lag_map, _, D, taus = select_lags_per_feature(
         X=X, y=y, I_t=I_t, L=L_eff, k=topk_lags_eff,
-        corr_spec=corr_spec, seasonal_policy=seasonal
+        corr_spec=corr_spec,
     )
 
     # -------------------- 2) Feature Engineering --------------------
@@ -85,34 +123,42 @@ def _fit_predict_one_origin(
     if use_rm3_eff:
         X_eng = apply_rm3(X_eng)
 
+    # ---- Target-only Blöcke (Parquet) hier anhängen — VOR Screening/Reduktion/DR ----
+    use_target_blocks = bool(getattr(cfg, "use_target_blocks", False))
+    X_aug = _augment_with_target_blocks(X_eng, use_target_blocks)
+
+    # ---- Head-Trim nur auf Basis der Lags/RM (Target-only sind lag=0) ----
+    def _lag_of(col):
+        try:
+            return int(str(col).split('__lag')[-1])
+        except Exception:
+            return 0
+    max_lag_used = max([_lag_of(c) for c in X_eng.columns] + [0])
+    rm_extra = 2 if use_rm3_eff else 0
+    head_needed = max_lag_used + rm_extra
+    taus_scr = taus[taus - head_needed >= 0] if head_needed > 0 else taus
+    if len(taus_scr) == 0:
+        taus_scr = taus[-1:].copy()
+
     # -------------------- 3) Screening K1 (prewhitened) --------------------
     keep_cols, scores = screen_k1(
-        X_eng=X_eng, y=y, I_t=I_t, corr_spec=corr_spec, D=D, taus=taus,
+        X_eng=X_aug, y=y, I_t=I_t, corr_spec=corr_spec, D=D, taus=taus_scr,
         k1_topk=k1_topk_eff, threshold=screen_threshold_eff
     )
-    X_sel = X_eng.loc[:, keep_cols]
+    X_sel = X_aug.loc[:, keep_cols]
 
     # -------------------- 4) Redundanzreduktion --------------------
+
     if redundancy_method_eff == "greedy":
         kept = redundancy_reduce_greedy(
-            X_sel, corr_spec, D, taus, redundancy_param_eff, scores=scores
+            X_sel, corr_spec, D, taus_scr, redundancy_param_eff, scores=scores
         )
         X_red = X_sel.loc[:, kept]
     else:
-        # Platzhalter: Cluster/mRMR-Implementierung könnte hier angeschlossen werden
-        X_red = X_sel
+        X_red = X_sel  # (Cluster/mRMR könnte hier später ergänzt werden)
 
     # -------------------- 5) Head-Trim / Train-Design --------------------
-    def _lag_of(col):
-        try:
-            return int(str(col).split("__lag")[-1])
-        except Exception:
-            return 0
-
-    max_lag_used = max([_lag_of(c) for c in X_red.columns] + [0])
-    rm_extra = 2 if use_rm3_eff else 0  # RM3 (Fenster 3) braucht 2 zusätzliche Perioden
-    head_needed = max_lag_used + rm_extra
-
+    head_needed = max([_lag_of(c) for c in X_red.columns] + [0])
     taus_model = taus[taus - head_needed >= 0] if head_needed > 0 else taus
     if len(taus_model) == 0:
         taus_model = taus[-1:].copy()
@@ -123,15 +169,7 @@ def _fit_predict_one_origin(
     # Eval-Design: Zeile t_origin
     x_eval = X_red.iloc[[t_origin], :].copy()
 
-    # -------------------- 6) (Optional) Target-only Blöcke (Eval only; bewusst 'deaktiv' im Train) --------------------
-    if getattr(cfg, "use_target_blocks", False):
-        z_ts = tsfresh_block(y, I_t=I_t, W=12)   # inline @ t
-        z_ch = chronos_block(y, I_t=I_t, W=12)
-        x_eval = pd.concat([x_eval.reset_index(drop=True),
-                            z_ts.reset_index(drop=True),
-                            z_ch.reset_index(drop=True)], axis=1)
-
-    # -------------------- 7) DR fit (train-only) und anwenden --------------------
+    # -------------------- 6) DR fit (train-only) und anwenden --------------------
     dr_map = fit_dr(
         X_tr,
         method=dr_method_eff,
@@ -146,7 +184,7 @@ def _fit_predict_one_origin(
         Xb_tr = transform_dr(dr_map, X_tr)
         Xb_ev = transform_dr(dr_map, x_eval)
 
-    # -------------------- 8) Modell fitten & Prognose --------------------
+    # -------------------- 7) Modell fitten & Prognose --------------------
     model = model_ctor(model_hp)
     model.fit(np.asarray(Xb_tr), np.asarray(y_tr).ravel())
     y_hat = float(model.predict_one(np.asarray(Xb_ev)))
@@ -194,7 +232,7 @@ def run_stageA(
             y_true_block, y_pred_block = [], []
             n_months = (oos_end_eff - oos_start + 1)
 
-            # -------------------- Effektive FE/DR-Parameter (nur lesen; Fit bleibt unten zentral) --------------------
+            # -------------------- Effektive FE/DR-Parameter --------------------
             L_eff = tuple(hp.get("lag_candidates", getattr(cfg, "lag_candidates", (1, 2, 3, 6, 12))))
             topk_lags_eff = int(hp.get("top_k_lags_per_feature", getattr(cfg, "top_k_lags_per_feature", 1)))
             use_rm3_eff = bool(hp.get("use_rm3", getattr(cfg, "use_rm3", True)))
@@ -206,6 +244,7 @@ def run_stageA(
             pca_var_target_eff = float(hp.get("pca_var_target", getattr(cfg, "pca_var_target", 0.95)))
             pca_kmax_eff = int(hp.get("pca_kmax", getattr(cfg, "pca_kmax", 25)))
             pls_components_eff = int(hp.get("pls_components", getattr(cfg, "pls_components", 2)))
+            use_target_blocks = bool(getattr(cfg, "use_target_blocks", False))
 
             # ---- Fit einmalig auf Trainingsfenster bis train_end ----
             I_t = train_end  # Origin = letztes Trainingsmonth im Block-Setup
@@ -213,7 +252,7 @@ def run_stageA(
             # 1) Lag-Selektions-Map (train-only)
             lag_map, _, D, taus = select_lags_per_feature(
                 X, y, I_t=I_t, L=L_eff, k=topk_lags_eff,
-                corr_spec=cfg.corr_spec, seasonal_policy=cfg.nuisance_seasonal
+                corr_spec=cfg.corr_spec,
             )
 
             # 2) Engineer design (lags + optional RM3)
@@ -221,28 +260,39 @@ def run_stageA(
             if use_rm3_eff:
                 X_eng = apply_rm3(X_eng)
 
+            # 2b) Target-only anhängen (Parquet)
+            X_aug = _augment_with_target_blocks(X_eng, use_target_blocks)
+
+            # Head-Trim VOR Screening/Redundanz (nur Lags/RM maßgeblich)
+            def _lag_of(col):
+                try:
+                    return int(str(col).split('__lag')[-1])
+                except Exception:
+                    return 0
+            max_lag_used = max([_lag_of(c) for c in X_eng.columns] + [0])
+            rm_extra = 2 if use_rm3_eff else 0
+            head_needed = max_lag_used + rm_extra
+            taus_scr = taus[taus - head_needed >= 0] if head_needed > 0 else taus
+            if len(taus_scr) == 0:
+                taus_scr = taus[-1:].copy()
+
             # 3) Prewhitened Screening (train-only)
             keep_cols, scores = screen_k1(
-                X_eng, y, I_t, cfg.corr_spec, D, taus,
+                X_eng=X_aug, y=y, I_t=I_t, corr_spec=cfg.corr_spec, D=D, taus=taus_scr,
                 k1_topk=k1_topk_eff, threshold=screen_threshold_eff
             )
-            X_sel = X_eng.loc[:, keep_cols]
+            X_sel = X_aug.loc[:, keep_cols]
 
             # 4) Redundanz (train-only), Greedy nach absteigendem Score
             if redundancy_method_eff == "greedy":
                 kept = redundancy_reduce_greedy(
-                    X_sel, cfg.corr_spec, D, taus, redundancy_param_eff, scores=scores
+                    X_sel, cfg.corr_spec, D, taus_scr, redundancy_param_eff, scores=scores
                 )
                 X_red = X_sel.loc[:, kept]
             else:
                 X_red = X_sel  # (Cluster/mRMR könnte hier später ergänzt werden)
 
             # 5) Head-Trim nach maximalem Lag
-            def _lag_of(col):
-                try:
-                    return int(str(col).split("__lag")[-1])
-                except Exception:
-                    return 0
             head_needed = max([_lag_of(c) for c in X_red.columns] + [0])
             taus_model = taus[taus - head_needed >= 0] if head_needed > 0 else taus
             if len(taus_model) == 0:
@@ -392,8 +442,7 @@ def run_stageB(
         n = len(arr)
         if n == 0:
             return float("inf")
-        # arr ist chronologisch: älteste ... neueste (wir append() und pop(0))
-        # Gewichte: älteste λ^(n-1), ..., neueste λ^0 = 1.0
+        # arr ist chronologisch: älteste ... neueste
         w = np.array([decay ** (n - 1 - k) for k in range(n)], dtype=float)
         se = np.array(arr, dtype=float)
         wmse = float(np.average(se, weights=w))
@@ -409,7 +458,7 @@ def run_stageB(
             y_hat = _fit_predict_one_origin(
                 model_ctor=model_ctor, model_hp=hp,
                 X=X, y=y, t_origin=t, cfg=cfg,
-                corr_spec=cfg.corr_spec, seasonal=cfg.nuisance_seasonal
+                corr_spec=cfg.corr_spec
             )
             se = (y_truth - y_hat) ** 2
             yhat_by_cfg.append((i, y_hat, se))
@@ -418,23 +467,20 @@ def run_stageB(
         for i, _, se in yhat_by_cfg:
             rolling_errors[i].append(se)
             if len(rolling_errors[i]) > window:
-                # ältesten Eintrag entfernen
                 rolling_errors[i].pop(0)
 
         # ---- Auswahl nach decayed metric ----
         wrmse_win = [ _wrmse(i) for i in range(len(shortlist)) ]
 
         if selection_mode == "decayed_ensemble":
-            # Optionaler Ensemble-Pfad (gewichtetes Mittel mit inversen decayed errors)
+            # Optionaler Ensemble-Pfad
             eps = 1e-12
             inv = np.array([1.0 / (eps + (wrmse if np.isfinite(wrmse) else 1e6)) for wrmse in wrmse_win], dtype=float)
             inv = np.maximum(inv, weight_floor)
             w = inv / np.sum(inv)
-            # (Wir behalten weiterhin 'active_idx' für Logging/Guardrails; Use-Case: Ensemble nur zur Stabilisierung)
-            new_idx = int(np.argmax(w))  # „repräsentativer“ Index (größtes Gewicht)
+            new_idx = int(np.argmax(w))  # „repräsentativer“ Index
             new_rmse = float(np.sum(w * np.array([_wrmse(i) for i in range(len(shortlist))], dtype=float)))
         else:
-            # Standard: decayed_best – nimm die beste einzelne Konfiguration
             new_idx = int(np.argmin(wrmse_win))
             new_rmse = wrmse_win[new_idx]
 
@@ -499,7 +545,6 @@ def run_stageB(
         summary = rmse_by_cfg.copy()
         summary["model"] = model_name
         summary_path = monthly_dir / "summary.csv"
-        # Schreibe Summary und hänge eine Zeile für den aktiven Pfad an
         summary.to_csv(summary_path, index=False)
         with open(monthly_dir / "summary_active.txt", "w") as f:
             f.write(f"RMSE_active_overall,{rmse_active:.6f}\n")

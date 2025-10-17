@@ -39,8 +39,6 @@ class CorrelationSpec(TypedDict):
 DEFAULT_CORR_SPEC: CorrelationSpec = {"mode": "expanding", "window": None, "lam": None}
 EWMA_CORR_SPEC:    CorrelationSpec = {"mode": "ewma", "window": 60, "lam": 0.98}
 
-# ---------- Nuisance-Policy ----------
-NuisanceSeasonalPolicy = Literal["auto", "on", "off"]
 
 # ---------- Stage-Defaults ----------
 DEFAULT_W0_A = 180
@@ -55,11 +53,10 @@ class GlobalConfig:
     refresh_cadence_months: int = 12
 
     # Nuisance & Korrelation
-    nuisance_seasonal: NuisanceSeasonalPolicy = "auto"
     corr_spec: CorrelationSpec = field(default_factory=lambda: dict(DEFAULT_CORR_SPEC))
 
     # Feature Engineering
-    lag_candidates: tuple = tuple(range(1, 5))
+    lag_candidates: tuple = tuple(range(1, 11))
     top_k_lags_per_feature: int = 1
     use_rm3: bool = True
 

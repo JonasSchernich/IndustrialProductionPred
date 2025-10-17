@@ -39,18 +39,15 @@ def load_ifo_features() -> pd.DataFrame:
     return df
 
 def load_tsfresh() -> pd.DataFrame:
-    path = PROCESSED / "tsfresh_slim.parquet"
+    path = PROCESSED / "tsfresh_slim.parquet"   # <- passt zu deinem Export
     df = pd.read_parquet(path)
-    df = df.set_index(pd.to_datetime(df.columns[0])) if "date" in df.columns else df
-    if not isinstance(df.index, pd.DatetimeIndex):
-        # expect a 'date' index in real pipeline; for demo this is flexible
-        pass
     return df
 
 def load_chronos() -> pd.DataFrame:
-    path = PROCESSED / "chronos_1step.parquet"
+    path = PROCESSED / "chronos_bolt.parquet"   # <- an deinen Dateinamen anpassen
     df = pd.read_parquet(path)
     return df
+
 
 def stageA_blocks(cfg: GlobalConfig, T: int) -> Iterator[Tuple[int,int,int,int]]:
     """
