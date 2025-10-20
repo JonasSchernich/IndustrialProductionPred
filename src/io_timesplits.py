@@ -33,7 +33,7 @@ def load_target(col: str = "IP_change") -> pd.Series:
 
 
 def load_ifo_features() -> pd.DataFrame:
-    path = PROCESSED / "cleaned_features_minimal.csv"
+    path = PROCESSED / "cleaned_features.csv"
     df = pd.read_csv(path, parse_dates=["date"], index_col="date")
     _validate_index(df.index)
     return df

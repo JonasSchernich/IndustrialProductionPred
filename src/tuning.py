@@ -148,7 +148,6 @@ def _fit_predict_one_origin(
     X_sel = X_aug.loc[:, keep_cols]
 
     # -------------------- 4) Redundanzreduktion --------------------
-
     if redundancy_method_eff == "greedy":
         kept = redundancy_reduce_greedy(
             X_sel, corr_spec, D, taus_scr, redundancy_param_eff, scores=scores
@@ -246,13 +245,16 @@ def run_stageA(
             pls_components_eff = int(hp.get("pls_components", getattr(cfg, "pls_components", 2)))
             use_target_blocks = bool(getattr(cfg, "use_target_blocks", False))
 
+            # --- HP-spezifische Korrelation (nur Änderung) ---
+            hp_corr = hp.get("corr_spec", cfg.corr_spec)
+
             # ---- Fit einmalig auf Trainingsfenster bis train_end ----
             I_t = train_end  # Origin = letztes Trainingsmonth im Block-Setup
 
             # 1) Lag-Selektions-Map (train-only)
             lag_map, _, D, taus = select_lags_per_feature(
                 X, y, I_t=I_t, L=L_eff, k=topk_lags_eff,
-                corr_spec=cfg.corr_spec,
+                corr_spec=hp_corr,
             )
 
             # 2) Engineer design (lags + optional RM3)
@@ -278,7 +280,7 @@ def run_stageA(
 
             # 3) Prewhitened Screening (train-only)
             keep_cols, scores = screen_k1(
-                X_eng=X_aug, y=y, I_t=I_t, corr_spec=cfg.corr_spec, D=D, taus=taus_scr,
+                X_eng=X_aug, y=y, I_t=I_t, corr_spec=hp_corr, D=D, taus=taus_scr,
                 k1_topk=k1_topk_eff, threshold=screen_threshold_eff
             )
             X_sel = X_aug.loc[:, keep_cols]
@@ -286,7 +288,7 @@ def run_stageA(
             # 4) Redundanz (train-only), Greedy nach absteigendem Score
             if redundancy_method_eff == "greedy":
                 kept = redundancy_reduce_greedy(
-                    X_sel, cfg.corr_spec, D, taus_scr, redundancy_param_eff, scores=scores
+                    X_sel, hp_corr, D, taus_scr, redundancy_param_eff, scores=scores
                 )
                 X_red = X_sel.loc[:, kept]
             else:
@@ -458,7 +460,7 @@ def run_stageB(
             y_hat = _fit_predict_one_origin(
                 model_ctor=model_ctor, model_hp=hp,
                 X=X, y=y, t_origin=t, cfg=cfg,
-                corr_spec=cfg.corr_spec
+                corr_spec=hp.get("corr_spec", cfg.corr_spec)  # <— HP-spezifische Korrelation
             )
             se = (y_truth - y_hat) ** 2
             yhat_by_cfg.append((i, y_hat, se))
