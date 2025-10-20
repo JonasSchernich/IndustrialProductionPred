@@ -1,68 +1,136 @@
-# src/lgbm.py
+# src/models/LGBM.py
 from __future__ import annotations
-from typing import Dict, Any, Tuple
+from typing import Any, Dict, Optional, List, Tuple
 import numpy as np
+import pandas as pd
 
 try:
     import lightgbm as lgb
-    from lightgbm import LGBMRegressor
-except Exception as e:
-    raise RuntimeError("LightGBM is required but not installed. Please install `lightgbm`.") from e
+except ImportError:
+    lgb = None
 
 
 class ForecastModel:
-    def __init__(self, hp: Dict[str, Any]):
-        self.hp = hp.copy()
-        self.model = None
-        self.backend = "lightgbm"
+    """
+    LightGBM-Regressor for the tuning pipeline.
+    - Handles early stopping internally using a validation tail.
+    - .fit(X, y, sample_weight=None)
+    - .predict_one(x_row)
+    - .get_feature_importances(feature_names)
+    - HPs: learning_rate, num_leaves, max_depth, subsample, colsample_bytree,
+           min_child_samples, reg_alpha, reg_lambda, n_estimators,
+           early_stopping_rounds, es_val_tail_size
+    """
 
-    def _split_train_dev(self, X: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Zeitbewusst: Dev-Tail ist das jüngste Ende des Trainingsfensters.
-        """
-        n = X.shape[0]
-        dev = max(8, min(24, max(1, int(0.1 * n))))
-        if n <= dev + 10:
-            return X, y, None, None
-        return X[:-dev], y[:-dev], X[-dev:], y[-dev:]
+    def __init__(self, params: Optional[Dict[str, Any]] = None):
+        if lgb is None:
+            raise ImportError("LightGBM not installed. Please `pip install lightgbm`.")
 
-    def fit(self, X_tr: np.ndarray, y_tr: np.ndarray):
-        Xb_tr, yb_tr, Xb_dev, yb_dev = self._split_train_dev(X_tr, y_tr)
-        params: Dict[str, Any] = dict(
-            learning_rate=self.hp.get("learning_rate", 0.05),
-            n_estimators=self.hp.get("n_estimators", 300),
-            subsample=self.hp.get("subsample", 0.8),
-            colsample_bytree=self.hp.get("colsample_bytree", 0.8),
-            reg_lambda=self.hp.get("reg_lambda", 5.0),
-            reg_alpha=self.hp.get("reg_alpha", 0.0),
-            max_depth=self.hp.get("max_depth", -1),
-            random_state=self.hp.get("seed", 123),
-            objective="regression",
-            n_jobs=self.hp.get("n_jobs", 0),
-            max_bin=self.hp.get("max_bin", 63),
-            min_data_in_bin=self.hp.get("min_data_in_bin", 1),
-            min_gain_to_split=self.hp.get("min_gain_to_split", 0.0),
-        )
-        # optional & versionssicher setzen
-        ffbn = self.hp.get("feature_fraction_bynode", None)
-        if ffbn is not None:
-            params["feature_fraction_bynode"] = ffbn
+        self.params = dict(params or {})
+        self._reg = None
+        self._backend_name = "lightgbm"
+        self._feature_names = None
+        self._importances = None
 
-        model = LGBMRegressor(**params)
-        if Xb_dev is not None:
-            model.fit(
-                Xb_tr, yb_tr,
-                eval_set=[(Xb_dev, yb_dev)],
-                eval_metric="l2",
-                callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
-            )
-        else:
-            model.fit(Xb_tr, yb_tr)
-        self.model = model
-
-    def predict_one(self, x_eval: np.ndarray) -> float:
-        yhat = self.model.predict(x_eval)
-        return float(yhat[0])
+        # Extract specific HPs for clarity
+        self._learning_rate = float(self.params.get('learning_rate', 0.1))
+        self._num_leaves = int(self.params.get('num_leaves', 31))
+        self._max_depth = int(self.params.get('max_depth', -1))
+        self._subsample = float(self.params.get('subsample', 0.8))
+        self._colsample_bytree = float(self.params.get('colsample_bytree', 0.8))
+        self._min_child_samples = int(self.params.get('min_child_samples', 20))
+        self._reg_alpha = float(self.params.get('reg_alpha', 0.0))
+        self._reg_lambda = float(self.params.get('reg_lambda', 0.0))
+        self._n_estimators = int(self.params.get('n_estimators', 1000))
+        self._early_stopping_rounds = int(self.params.get('early_stopping_rounds', 50))
+        self._es_val_tail_size = int(self.params.get('es_val_tail_size', 24))  # Months for validation tail
 
     def get_name(self) -> str:
-        return f"lgbm[{self.backend}]"
+        return self._backend_name
+
+    @staticmethod
+    def _clean(X):
+        X = np.asarray(X, dtype=float)
+        return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+
+    def fit(self, X, y, sample_weight=None):
+        X = self._clean(X)
+        y = np.asarray(y, dtype=float).ravel()
+        n_samples = len(y)
+
+        # Store feature names if X is a DataFrame
+        if isinstance(X, pd.DataFrame):
+            self._feature_names = X.columns.tolist()
+            X = X.values
+        elif hasattr(X, 'columns'):  # Handles numpy structured arrays etc.
+            self._feature_names = list(X.columns)
+            X = X.values
+        else:
+            self._feature_names = [f"feature_{i}" for i in range(X.shape[1])]
+
+        # Prepare data and validation split for early stopping
+        # Follows the logic from Methods
+        val_size = min(self._es_val_tail_size, max(1, n_samples // 5))  # Ensure val_size is reasonable
+        if n_samples <= val_size * 2:  # Not enough data for a meaningful split
+            X_train, y_train, w_train = X, y, sample_weight
+            X_val, y_val, w_val = None, None, None
+            eval_set = None
+            fit_params = {}
+        else:
+            X_train, X_val = X[:-val_size], X[-val_size:]
+            y_train, y_val = y[:-val_size], y[-val_size:]
+
+            if sample_weight is not None:
+                sample_weight = np.asarray(sample_weight).ravel()
+                w_train, w_val = sample_weight[:-val_size], sample_weight[-val_size:]
+            else:
+                w_train, w_val = None, None
+
+            eval_set = [(X_val, y_val)]
+            fit_params = {
+                'eval_set': eval_set,
+                'eval_sample_weight': [w_val] if w_val is not None else None,
+                'callbacks': [
+                    lgb.early_stopping(self._early_stopping_rounds, verbose=False)
+                ]
+            }
+
+        self._reg = lgb.LGBMRegressor(
+            learning_rate=self._learning_rate,
+            num_leaves=self._num_leaves,
+            max_depth=self._max_depth,
+            subsample=self._subsample,
+            colsample_bytree=self._colsample_bytree,
+            min_child_samples=self._min_child_samples,
+            reg_alpha=self._reg_alpha,
+            reg_lambda=self._reg_lambda,
+            n_estimators=self._n_estimators,
+            random_state=42,
+            n_jobs=1  # Safer for nested parallelism
+        )
+
+        self._reg.fit(X_train, y_train, sample_weight=w_train, **fit_params)
+
+        # Store feature importances
+        self._importances = dict(zip(self._feature_names, self._reg.feature_importances_))
+
+        return self
+
+    def predict(self, X):
+        if self._reg is None:
+            raise RuntimeError("Model not fitted.")
+        X = self._clean(X)
+        # Use best_iteration_ if early stopping was used
+        best_iter = getattr(self._reg, 'best_iteration_', None)
+        return self._reg.predict(X, num_iteration=best_iter)
+
+    def predict_one(self, x_row):
+        x = np.asarray(x_row).reshape(1, -1)
+        return float(self.predict(x)[0])
+
+    def get_feature_importances(self) -> Dict[str, float]:
+        """Returns feature importances as a dictionary."""
+        if self._importances is None:
+            raise RuntimeError("Model not fitted or importances not available.")
+        # Return copy to prevent external modification
+        return self._importances.copy()
