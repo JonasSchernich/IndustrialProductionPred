@@ -5,7 +5,7 @@ from typing import Iterable, Iterator, Tuple, Dict
 import pandas as pd
 import numpy as np
 from pathlib import Path
-import os
+import os, re
 
 # --- KORREKTUR: Relative Importe (wie gewünscht) ---
 from .config import PROCESSED, outputs_for_model, GlobalConfig
@@ -34,42 +34,38 @@ def load_target(col: str = "IP_change") -> pd.Series:
     return s
 
 
+def _clean_column_name(col_name: str) -> str:
+    """Ensures column names are valid identifiers (strings, no weird chars)."""
+    name = str(col_name)
+    # Replace invalid characters (anything not letter, number, or _) with underscore
+    name = re.sub(r'[^a-zA-Z0-9_.]', '_', name)
+    # Prepend 'f_' if the name starts with a digit or period
+    if re.match(r'^[0-9.]', name):
+        name = 'f_' + name
+    # Ensure name is not empty
+    if not name:
+        name = 'unnamed_feature'
+    return name
+
+
 def load_ifo_features() -> pd.DataFrame:
     path = PROCESSED / "cleaned_features.csv"
     df = pd.read_csv(path, parse_dates=["date"], index_col="date")
     _validate_index(df.index)
-    return df
 
+    # --- NEW: Clean column names ---
+    original_columns = df.columns.tolist()
+    cleaned_columns = [_clean_column_name(col) for col in original_columns]
 
-# --- NEU: Parquet-Ladefunktion (behebt Timestamp-Anzeigeproblem) ---
+    # Check if renaming actually happened
+    if original_columns != cleaned_columns:
+        print("INFO in load_ifo_features: Renaming columns to ensure validity.")
+        # Create a mapping for clarity (optional logging)
+        # name_mapping = dict(zip(original_columns, cleaned_columns))
+        # print("Name mapping:", name_mapping)
+        df.columns = cleaned_columns
+    # --- END NEW ---
 
-def _load_parquet_with_datetime_index(
-        filename: str,
-        date_col: str = "date"
-) -> pd.DataFrame:
-    """
-    Lädt eine Parquet-Datei, die einen Datums-Index als Spalte gespeichert hat.
-    Setzt diesen Index als DatetimeIndex.
-    """
-    path = PROCESSED / filename
-    if not path.exists():
-        raise FileNotFoundError(f"Datei nicht gefunden: {path}")
-
-    df = pd.read_parquet(path)
-
-    if date_col not in df.columns:
-        if isinstance(df.index, pd.DatetimeIndex):
-            _validate_index(df.index)
-            return df
-        raise ValueError(
-            f"Datumsspalte '{date_col}' nicht in {filename} gefunden "
-            f"und der Index ist kein DatetimeIndex."
-        )
-
-    # Konvertiere die Spalte (kann int/Nanosekunden sein) in Datetime
-    df[date_col] = pd.to_datetime(df[date_col])
-    df = df.set_index(date_col).sort_index()
-    _validate_index(df.index)
     return df
 
 
