@@ -1,6 +1,6 @@
 # src/tuning.py
 from __future__ import annotations
-from typing import Dict, Any, List, Tuple, Callable, Optional
+from typing import Dict, Any, List, Tuple, Callable, Optional, TypedDict
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
@@ -91,7 +91,17 @@ def _mk_paths(model_name: str, cfg: GlobalConfig) -> RunState:
                     out_stageA=outs["stageA"], out_stageB=outs["stageB"])
 
 
-# ------------------------ Core: ein Origin schätzen ------------------------
+# NEU: TypedDict für den Return-Wert, um das Logging sauber zu halten
+class PredictionLog(TypedDict):
+    y_pred: float
+    n_features_sis: int
+    n_features_redundant: int
+    n_dr_components: int
+    ifo_dispersion_t: float
+    chronos_sigma_t: float
+
+
+# ------------------------ Core: ein Origin schätzen (KORRIGIERT & ERWEITERT) ------------------------
 
 def _fit_predict_one_origin(
         model_ctor: Callable[[Dict[str, Any]], Any],
@@ -100,9 +110,11 @@ def _fit_predict_one_origin(
         y: pd.Series,
         t_origin: int,
         cfg: GlobalConfig,
-        corr_spec) -> float:
+        corr_spec
+) -> PredictionLog:
     """
     Train-only Design bis inkl. Origin t (0-basiert), fit Modell, prognostiziere y_{t+1}.
+    Gibt jetzt ein Dict mit Prognose und Analyse-Metriken zurück.
     """
     I_t = t_origin + 1  # 1-basiertes Zählen für die FE-Helfer
 
@@ -147,13 +159,15 @@ def _fit_predict_one_origin(
     rm_extra = 2 if use_rm3_eff else 0
     head_needed = max_lag_used + rm_extra
 
-    if head_needed > 0:
-        taus_scr = taus[taus - head_needed >= 0]
-    else:
-        taus_scr = taus
+    # taus (von select_lags) startet bei 1
+    taus_base = np.arange(1, int(I_t), dtype=int)
 
-    if len(taus_scr) == 0:
-        taus_scr = taus[-1:].copy()
+    # KORRIGIERT: Head-Trim Off-by-One (Kritik 1)
+    taus_scr_mask = (taus_base - head_needed >= 0)
+    if np.sum(taus_scr_mask) == 0:
+        taus_scr = taus_base[-1:].copy() if taus_base.size > 0 else np.array([], dtype=int)
+    else:
+        taus_scr = taus_base[taus_scr_mask]
 
     # -------------------- 3) Screening K1 (prewhitened) --------------------
     keep_cols, scores = screen_k1(
@@ -161,6 +175,20 @@ def _fit_predict_one_origin(
         k1_topk=k1_topk_eff, threshold=screen_threshold_eff
     )
     X_sel = X_aug.loc[:, keep_cols]
+
+    # --- LOGGING-METRIK 1: n_features_sis ---
+    n_sis = len(keep_cols)
+
+    # --- LOGGING-METRIK 2: ifo_dispersion_t ---
+    disp_t = np.nan
+    if not X_sel.empty:
+        try:
+            # Berechne Dispersion der *gescreenten* Features (wie in Thesis 5.5)
+            X_sel_vals = X_sel.iloc[taus_scr, :].to_numpy(dtype=float)
+            # Median der Standardabweichungen jeder Spalte = robustes Maß
+            disp_t = float(np.nanmedian(np.nanstd(X_sel_vals, axis=0)))
+        except Exception:
+            disp_t = np.nan  # Fallback
 
     # -------------------- 4) Redundanzreduktion --------------------
     if redundancy_method_eff == "greedy":
@@ -170,25 +198,26 @@ def _fit_predict_one_origin(
         X_red = X_sel.loc[:, kept]
     else:
         X_red = X_sel
+        kept = keep_cols
+
+    # --- LOGGING-METRIK 3: n_features_redundant ---
+    n_red = len(kept)
 
     # -------------------- 5) Head-Trim / Train-Design --------------------
     head_needed_final = max([_lag_of(c) for c in X_red.columns] + [0])
 
-    if head_needed_final > 0:
-        taus_model = taus[taus - head_needed_final >= 0]
+    # KORRIGIERT: Head-Trim Off-by-One (Kritik 1)
+    taus_model_mask = (taus_base - head_needed_final >= 0)
+    if np.sum(taus_model_mask) == 0:
+        taus_model = taus_base[-1:].copy() if taus_base.size > 0 else np.array([], dtype=int)
     else:
-        taus_model = taus
-
-    if len(taus_model) == 0:
-        taus_model = taus[-1:].copy()
+        taus_model = taus_base[taus_model_mask]
 
     X_tr = X_red.iloc[taus_model, :].copy()
     y_tr = y.shift(-1).iloc[taus_model]
 
     # Eval-Design: Zeile t_origin
     x_eval = X_red.iloc[[t_origin], :].copy()
-
-    # --- BLOCK FÜR 'fit_window_size' WURDE HIER ENTFERNT ---
 
     # -------------------- 6) DR fit (train-only) und anwenden --------------------
     dr_map = fit_dr(
@@ -198,6 +227,10 @@ def _fit_predict_one_origin(
         pca_kmax=pca_kmax_eff,
         pls_components=pls_components_eff
     )
+
+    # --- LOGGING-METRIK 4: n_dr_components ---
+    n_dr = dr_map.n_components_  # Dieser Wert wird in fit_dr korrekt gesetzt
+
     if dr_method_eff == "pls":
         Xb_tr = transform_dr(dr_map, X_tr, y=y_tr, fit_pls=True)
         Xb_ev = transform_dr(dr_map, x_eval, y=None, fit_pls=False)
@@ -206,9 +239,12 @@ def _fit_predict_one_origin(
         Xb_ev = transform_dr(dr_map, x_eval)
 
     # -------------------- 7) Modell fitten & Prognose --------------------
-    model = model_ctor(model_hp)
+    model_hp_with_seed = dict(model_hp)
+    model_hp_with_seed['seed'] = cfg.seed
 
-    # --- Modifikation für Sample Weights (Diese bleibt erhalten) ---
+    model = model_ctor(model_hp_with_seed)
+
+    # --- Modifikation für Sample Weights ---
     weight_decay = model_hp.get("sample_weight_decay")
     if weight_decay is not None:
         try:
@@ -218,17 +254,35 @@ def _fit_predict_one_origin(
 
             model.fit(np.asarray(Xb_tr), np.asarray(y_tr).ravel(), sample_weight=weights)
         except TypeError:
-            # Fallback für Modelle, die sample_weight nicht akzeptieren (TabPFN)
             model.fit(np.asarray(Xb_tr), np.asarray(y_tr).ravel())
     else:
         model.fit(np.asarray(Xb_tr), np.asarray(y_tr).ravel())
     # --- Ende Modifikation ---
 
     y_hat = float(model.predict_one(np.asarray(Xb_ev)))
-    return y_hat
+
+    # --- LOGGING-METRIK 5: chronos_sigma_t ---
+    ch_sig = np.nan
+    if "Chronos" in (target_block_set_eff or []) and _CHRONOS_CACHE is not None:
+        # Annahme: Spalte heißt 'chronos_std' (gemäß Thesis σ(PD))
+        col_name = 'chronos_std'
+        if col_name in _CHRONOS_CACHE.columns:
+            try:
+                ch_sig = float(_CHRONOS_CACHE.at[X.index[t_origin], col_name])
+            except KeyError:
+                ch_sig = np.nan  # Datum t_origin nicht im Cache
+
+    return {
+        "y_pred": y_hat,
+        "n_features_sis": n_sis,
+        "n_features_redundant": n_red,
+        "n_dr_components": n_dr,
+        "ifo_dispersion_t": disp_t,
+        "chronos_sigma_t": ch_sig
+    }
 
 
-# ------------------------ Stage A ------------------------
+# ------------------------ Stage A (KORRIGIERT) ------------------------
 
 def run_stageA(
         model_name: str,
@@ -241,7 +295,7 @@ def run_stageA(
         min_survivors_per_block: int = 2,
 ) -> List[Dict[str, Any]]:
     """
-    Stage A mit drei Blöcken.
+    Stage A mit block-basiertem Holdout (ASHA-Stil).
     """
     agg_scores: Dict[str, List[float]] = {}
     hp_by_key: Dict[str, Any] = {}
@@ -251,7 +305,7 @@ def run_stageA(
     survivors: List[Dict[str, Any]] = list(model_grid)
 
     for (train_end, oos_start, oos_end, block_id) in stageA_blocks(cfg, T):
-        oos_end_eff = min(oos_end, T - 2)
+        oos_end_eff = min(oos_end, T - 2)  # T-2, da wir y_{t+1} brauchen
         if oos_end_eff < oos_start:
             break
 
@@ -281,7 +335,7 @@ def run_stageA(
             hp_corr = hp.get("corr_spec", cfg.corr_spec)
 
             # ---- Fit einmalig auf Trainingsfenster bis train_end ----
-            I_t = train_end
+            I_t = train_end + 1  # I_t ist exklusiv (wie im Origin-Fit)
 
             # 1) Lag-Selektions-Map (train-only)
             lag_map, _, D, taus = select_lags_per_feature(
@@ -310,13 +364,14 @@ def run_stageA(
             rm_extra = 2 if use_rm3_eff else 0
             head_needed = max_lag_used + rm_extra
 
-            if head_needed > 0:
-                taus_scr = taus[taus - head_needed >= 0]
-            else:
-                taus_scr = taus
+            taus_base_A = np.arange(1, int(I_t), dtype=int)
 
-            if len(taus_scr) == 0:
-                taus_scr = taus[-1:].copy()
+            # KORRIGIERT: Head-Trim Off-by-One (Kritik 1)
+            taus_scr_mask = (taus_base_A - head_needed >= 0)
+            if np.sum(taus_scr_mask) == 0:
+                taus_scr = taus_base_A[-1:].copy() if taus_base_A.size > 0 else np.array([], dtype=int)
+            else:
+                taus_scr = taus_base_A[taus_scr_mask]
 
             # 3) Prewhitened Screening (train-only)
             keep_cols, scores = screen_k1(
@@ -337,18 +392,15 @@ def run_stageA(
             # 5) Head-Trim nach maximalem Lag
             head_needed_final = max([_lag_of(c) for c in X_red.columns] + [0])
 
-            if head_needed_final > 0:
-                taus_model = taus[taus - head_needed_final >= 0]
+            # KORRIGIERT: Head-Trim Off-by-One (Kritik 1)
+            taus_model_mask = (taus_base_A - head_needed_final >= 0)
+            if np.sum(taus_model_mask) == 0:
+                taus_model = taus_base_A[-1:].copy() if taus_base_A.size > 0 else np.array([], dtype=int)
             else:
-                taus_model = taus
-
-            if len(taus_model) == 0:
-                taus_model = taus[-1:].copy()
+                taus_model = taus_base_A[taus_model_mask]
 
             X_tr = X_red.iloc[taus_model, :].copy()
             y_tr = y.shift(-1).iloc[taus_model]
-
-            # --- BLOCK FÜR 'fit_window_size' WURDE HIER ENTFERNT ---
 
             # 6) DR fit (train-only) und Train-Projection
             dr_map = fit_dr(
@@ -360,10 +412,12 @@ def run_stageA(
             )
             Xb_tr = transform_dr(dr_map, X_tr, y_tr, fit_pls=(dr_method_eff == "pls"))
 
-            # 7) Modell einmal fitten
-            model = model_ctor(hp)
+            # 7) Modell einmal fitten (KORRIGIERT: Seed injizieren)
+            hp_with_seed = dict(hp)
+            hp_with_seed['seed'] = cfg.seed
+            model = model_ctor(hp_with_seed)
 
-            # --- Modifikation für Sample Weights (Bleibt erhalten) ---
+            # --- Modifikation für Sample Weights ---
             weight_decay = hp.get("sample_weight_decay")
             if weight_decay is not None:
                 try:
@@ -379,7 +433,9 @@ def run_stageA(
             # --- Ende Modifikation ---
 
             # ---- Vorhersagen für den gesamten Block mit demselben Fit ----
-            for t in range(oos_start - 1, oos_end_eff + 0):  # 0-based t
+            # KORRIGIERT: OOS-Schleife (Kritik 2)
+            # t läuft von oos_start-1 (z.B. 180) bis oos_end_eff-1 (z.B. 199)
+            for t in range(oos_start - 1, oos_end_eff):
                 x_eval = X_red.iloc[[t], :].copy()
                 Xb_eval = transform_dr(dr_map, x_eval, fit_pls=False)
                 y_hat = model.predict_one(Xb_eval)
@@ -389,10 +445,11 @@ def run_stageA(
                 y_pred_block.append(float(y_hat))
 
                 done = len(y_true_block)
-                # --- LOGGING WIEDER MONATLICH (Wunsch 1) ---
-                _progress(
-                    f"    · Month {done}/{n_months} processed | running...RMSE={rmse(np.array(y_true_block), np.array(y_pred_block)):.4f}"
-                )
+                # --- LOGGING WIEDER MONATLICH ---
+                if (done % 5 == 0) or (done == n_months):  # Logge nicht jeden Monat
+                    _progress(
+                        f"    · Month {done}/{n_months} processed | running...RMSE={rmse(np.array(y_true_block), np.array(y_pred_block)):.4f}"
+                    )
 
                 preds_records.append({
                     "block": f"block{block_id}", "t": t,
@@ -456,7 +513,7 @@ def run_stageA(
     return shortlist
 
 
-# ------------------------ Stage B ------------------------
+# ------------------------ Stage B (KORRIGIERT & ERWEITERT) ------------------------
 
 def run_stageB(
         model_name: str,
@@ -468,80 +525,78 @@ def run_stageB(
         max_months: Optional[int] = None
 ) -> None:
     """
-    Stage B mit gefrorener Shortlist.
+    Stage B mit gefrorener Shortlist und Online-Auswahl.
     """
     rs = _mk_paths(model_name, cfg)
     T = len(y)
 
-    # Policy-Parameter
-    window = int(getattr(cfg, "policy_window", 12))
-    decay = float(getattr(cfg, "policy_decay", 0.95))
-    gain_min = float(getattr(cfg, "policy_gain_min", 0.03))
-    cooldown = int(getattr(cfg, "policy_cooldown", 3))
-    selection_mode = str(getattr(cfg, "selection_mode", "decayed_best")).lower()
-    weight_floor = float(getattr(cfg, "weight_floor", 1e-6))
+    # Policy-Parameter (KORRIGIERT: Lesen aus cfg)
+    window = int(cfg.policy_window)
+    decay = float(cfg.policy_decay)
+    gain_min = float(cfg.policy_gain_min)
+    cooldown = int(cfg.policy_cooldown)
+    selection_mode = str(cfg.selection_mode).lower()
 
     active_idx = 0
     last_switch_t: Optional[int] = None
 
     monthly_dir = rs.out_stageB / "monthly"
     monthly_dir.mkdir(parents=True, exist_ok=True)
-    monthly_scores_path = monthly_dir / "scores.csv"
-    monthly_preds_path = monthly_dir / "preds.csv"
+    monthly_scores_path = rs.out_stageB / "monthly" / "scores.csv"
+    monthly_preds_path = rs.out_stageB / "monthly" / "preds.csv"
 
-    months_iter = [t for t in stageB_months(cfg, T) if (t + 1) < T]
+    months_iter = [t for t in stageB_months(cfg, T) if (t + 1) < T]  # t bis T-2
     if max_months is not None:
         months_iter = months_iter[:max_months]
 
     # Rolling-Fehler (Liste von SEs) pro Config
     rolling_errors: Dict[int, List[float]] = {i: [] for i in range(len(shortlist))}
 
+    # KORRIGIERTE _wrmse Funktion
     def _wrmse(i: int) -> float:
-        """Exponentiell gewichtete Fenster-RMSE für Config i (höheres Gewicht auf jüngere Monate)."""
-        arr = rolling_errors[i]
-        n = len(arr)
-        if n == 0:
+        """Exponentiell abgezinste RMSE über 'window' Fehler mit 'decay'."""
+        # Annahme: rolling_errors[i] enthält bereits QUADRIERTE Fehler (SEs)
+        errs = rolling_errors[i][-window:] if window > 0 else rolling_errors[i]
+        if len(errs) == 0:
             return float("inf")
-        w = np.array([decay ** (n - 1 - k) for k in range(n)], dtype=float)
-        se = np.array(arr, dtype=float)
-        wmse = float(np.average(se, weights=w))
-        return float(np.sqrt(wmse))
+        # Jüngere Fehler höher gewichten (w[0] = ältestes, w[-1] = jüngstes)
+        w = np.array([decay ** k for k in range(len(errs) - 1, -1, -1)], dtype=float)
+        w_sum = w.sum()
+        if w_sum <= 0:
+            return float("inf") if len(errs) > 0 else 0.0
+        w /= w_sum
+
+        # KORRIGIERTER FIX: errs sind bereits e_t^2
+        mse_w = float(np.sum(w * np.array(errs, dtype=float)))
+        return float(np.sqrt(mse_w))
 
     for t in months_iter:
         _progress(f"[Stage B] Month origin t={t} | evaluating {len(shortlist)} configs | active={active_idx + 1}")
         y_truth = float(y.iloc[t + 1])
 
         # Vorhersagen für alle Kandidaten
-        yhat_by_cfg = []
+        yhat_by_cfg: List[Tuple[int, float, float, PredictionLog]] = []
         for i, hp in enumerate(shortlist):
-            y_hat = _fit_predict_one_origin(
+            # ERWEITERTES LOGGING: _fit_predict_one_origin gibt jetzt Dict zurück
+            result_dict = _fit_predict_one_origin(
                 model_ctor=model_ctor, model_hp=hp,
                 X=X, y=y, t_origin=t, cfg=cfg,
                 corr_spec=hp.get("corr_spec", cfg.corr_spec)
             )
+            y_hat = result_dict["y_pred"]
             se = (y_truth - y_hat) ** 2
-            yhat_by_cfg.append((i, y_hat, se))
+            yhat_by_cfg.append((i, y_hat, se, result_dict))  # Speichere ganzes Dict
 
-        # Rolling-Fehler aktualisieren
-        for i, _, se in yhat_by_cfg:
+        # Rolling-Fehler aktualisieren (nur SEs speichern)
+        for i, _, se, _ in yhat_by_cfg:
             rolling_errors[i].append(se)
-            if len(rolling_errors[i]) > window:
-                rolling_errors[i].pop(0)
 
         # ---- Auswahl nach decayed metric ----
         wrmse_win = [_wrmse(i) for i in range(len(shortlist))]
 
-        if selection_mode == "decayed_ensemble":
-            eps = 1e-12
-            inv = np.array([1.0 / (eps + (wrmse if np.isfinite(wrmse) else 1e6)) for wrmse in wrmse_win], dtype=float)
-            inv = np.maximum(inv, weight_floor)
-            w = inv / np.sum(inv)
-            new_idx = int(np.argmax(w))
-            new_rmse = float(np.sum(w * np.array([_wrmse(i) for i in range(len(shortlist))], dtype=float)))
-        else:
-            new_idx = int(np.argmin(wrmse_win))
-            new_rmse = wrmse_win[new_idx]
-
+        # KORRIGIERT: Nur 'decayed_best' (argmin der decayed RMSE)
+        new_idx = int(np.argmin(wrmse_win))
+        new_rmse = wrmse_win[new_idx] if new_idx < len(wrmse_win) else float('inf')
         inc_rmse = wrmse_win[active_idx]
 
         rel_gain = 0.0
@@ -558,9 +613,9 @@ def run_stageB(
             last_switch_t = t
             switched = True
 
-        # Preds-CSV: alle Kandidaten
+        # Preds-CSV: alle Kandidaten (ERWEITERTES LOGGING)
         rows = []
-        for i, y_hat, _ in yhat_by_cfg:
+        for i, y_hat, _, result_dict in yhat_by_cfg:
             rows.append({
                 "t": t, "date_t_plus_1": y.index[t + 1].strftime("%Y-%m-%d"),
                 "y_true": y_truth, "y_pred": y_hat,
@@ -568,13 +623,19 @@ def run_stageB(
                 "is_active": (i == active_idx),
                 "wrmse_window": wrmse_win[i],
                 "window_len": len(rolling_errors[i]),
-                "selection_mode": selection_mode
+                "selection_mode": selection_mode,
+                # --- NEUE LOG-SPALTEN ---
+                "n_features_sis": result_dict["n_features_sis"],
+                "n_features_redundant": result_dict["n_features_redundant"],
+                "n_dr_components": result_dict["n_dr_components"],
+                "ifo_dispersion_t": result_dict["ifo_dispersion_t"],
+                "chronos_sigma_t": result_dict["chronos_sigma_t"]
             })
         append_csv(monthly_preds_path, pd.DataFrame(rows))
 
         # Scores-CSV
         rows2 = []
-        for i in range(len(shortlist)):
+        for i in range(len(shortlist)):  # Iteriere über Indizes
             rows2.append({
                 "t": t, "model": model_name, "config_id": i + 1,
                 "wrmse_window": wrmse_win[i], "window_len": len(rolling_errors[i]),
@@ -603,9 +664,10 @@ def run_stageB(
         rmse_active = float(((active["y_true"] - active["y_pred"]) ** 2).mean() ** 0.5) if len(active) else np.nan
         summary = rmse_by_cfg.copy()
         summary["model"] = model_name
-        summary_path = monthly_dir / "summary.csv"
+        summary_path = monthly_dir.parent / "summary" / "summary.csv"  # In 'summary' Ordner
+        summary_path.parent.mkdir(exist_ok=True)
         summary.to_csv(summary_path, index=False)
-        with open(monthly_dir / "summary_active.txt", "w") as f:
+        with open(monthly_dir.parent / "summary" / "summary_active.txt", "w") as f:
             f.write(f"RMSE_active_overall,{rmse_active:.6f}\n")
         _progress(f"[Stage B] summary.csv & summary_active.txt geschrieben.")
     except Exception as e:
