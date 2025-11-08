@@ -7,8 +7,8 @@ import numpy as np
 from pathlib import Path
 import os, re
 
-# --- KORREKTUR: Relative Importe (wie gewünscht) ---
-from .config import PROCESSED, outputs_for_model, GlobalConfig
+# --- KORREKTUR: Relative Importe (ergänzt) ---
+from .config import PROCESSED, OUTPUTS, outputs_for_model, GlobalConfig
 
 
 def _validate_index(idx: pd.DatetimeIndex) -> None:
@@ -57,16 +57,39 @@ def load_ifo_features() -> pd.DataFrame:
     original_columns = df.columns.tolist()
     cleaned_columns = [_clean_column_name(col) for col in original_columns]
 
-    # Check if renaming actually happened
     if original_columns != cleaned_columns:
         print("INFO in load_ifo_features: Renaming columns to ensure validity.")
-        # Create a mapping for clarity (optional logging)
-        # name_mapping = dict(zip(original_columns, cleaned_columns))
-        # print("Name mapping:", name_mapping)
         df.columns = cleaned_columns
     # --- END NEW ---
 
     return df
+
+
+# --- Private Helper für Parquet-Laden ---
+def _load_parquet_with_datetime_index(file_name: str, date_col: str = "date",
+                                      base_dir: Path = PROCESSED) -> pd.DataFrame:
+    """Lädt eine Parquet-Datei aus einem Basis-Verzeichnis und setzt den Datumsindex."""
+    path = base_dir / file_name
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Datei nicht gefunden: {path}. Bitte zuerst `feature_importance.ipynb` (oder andere Skripte) ausführen.")
+
+    df = pd.read_parquet(path)
+
+    if date_col in df.columns:
+        df[date_col] = pd.to_datetime(df[date_col])
+        df = df.set_index(date_col)
+    elif df.index.name == date_col or df.index.name is None:
+        # Ist schon der Index, nur sicherstellen, dass es Datetime ist
+        df.index = pd.to_datetime(df.index)
+        df.index.name = date_col  # Index-Namen setzen (wichtig für reindex)
+    else:
+        raise ValueError(f"Datumsspalte '{date_col}' nicht in {file_name} gefunden.")
+
+    _validate_index(df.index)
+    return df
+
+
 
 
 def load_tsfresh() -> pd.DataFrame:
@@ -80,11 +103,40 @@ def load_chronos() -> pd.DataFrame:
 
 
 def load_ar() -> pd.DataFrame:
-    """NEU: Lädt das AR.parquet-Feature und stellt DatetimeIndex sicher."""
+    """Lädt das AR.parquet-Feature und stellt DatetimeIndex sicher."""
     return _load_parquet_with_datetime_index("AR.parquet", date_col="date")
 
 
-# --- ENDE PARQUET-Ladefunktion ---
+
+def load_full_lagged_features(base_dir: Path | None = None) -> pd.DataFrame:
+    """
+    Lädt die von feature_importance.ipynb erstellte, volle gelaggte Matrix.
+    base_dir kann optional angegeben werden (z. B. aus Notebook),
+    sonst wird standardmäßig OUTPUTS/feature_importance verwendet.
+    """
+    FI_DIR = base_dir or (OUTPUTS / "feature_importance")
+    return _load_parquet_with_datetime_index(
+        "X_eng_full_lagged.parquet",
+        date_col="date",
+        base_dir=FI_DIR
+    )
+
+
+def load_rolling_importance(base_dir: Path | None = None) -> pd.DataFrame:
+    """
+    Lädt die von feature_importance.ipynb erstellte Rolling-Mean-Importance-Matrix.
+    base_dir kann optional angegeben werden (z. B. aus Notebook),
+    sonst wird standardmäßig OUTPUTS/feature_importance verwendet.
+    """
+    FI_DIR = base_dir or (OUTPUTS / "feature_importance")
+    return _load_parquet_with_datetime_index(
+        "rolling_mean_importance_60m.parquet",
+        date_col="date",
+        base_dir=FI_DIR
+    )
+
+
+
 
 
 def stageA_blocks(cfg: GlobalConfig, T: int) -> Iterator[Tuple[int, int, int, int]]:
