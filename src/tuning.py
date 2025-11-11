@@ -170,7 +170,7 @@ def _fit_predict_one_origin_FULL_FE(
     rm_extra = 2 if use_rm3_eff else 0
     head_needed = max_lag_used + rm_extra
 
-    taus_base = np.arange(1, int(I_t), dtype=int)
+    taus_base = np.arange(1, int(I_t) - 1, dtype=int)
 
     # KORRIGIERT: Head-Trim Off-by-One (Kritik 1)
     taus_scr_mask = (taus_base - head_needed >= 0)
@@ -399,7 +399,7 @@ def run_stageA(
     survivors: List[Dict[str, Any]] = list(model_grid)
 
     for (train_end, oos_start, oos_end, block_id) in stageA_blocks(cfg, T):
-        oos_end_eff = min(oos_end, T - 2)
+        oos_end_eff = min(oos_end, T - 1)
         if oos_end_eff < oos_start:
             break
 
@@ -420,30 +420,32 @@ def run_stageA(
             model = model_ctor(hp_with_seed)
             weight_decay = hp.get("sample_weight_decay")
 
-            # --- NEUER LOGIK-SWITCH (PIPELINE-AUSWAHL) ---
             if use_dynamic_fi:
                 # --- PIPELINE 3: DYNAMIC FI ---
                 n_features = int(hp.get("n_features_to_use", 20))
 
-                # Top-K Features für den ersten Zielmonat des Blocks (oos_start)
-                pred_date = y.index[oos_start]
+                # Wichtig: Auswahl ≤ train_end (letzter Trainingsmonat) → kausal
+                anchor_date = y.index[train_end]
                 try:
-                    importance_scores_for_t = rolling_imp.loc[pred_date]
-                except KeyError:
-                    # Fallback, falls pred_date fehlt
-                    pos = rolling_imp.index.get_indexer([pred_date], method="pad")[0]
-                    importance_scores_for_t = rolling_imp.iloc[pos] if pos != -1 else rolling_imp.iloc[-1]
+                    importance_scores_for_t = rolling_imp.loc[:anchor_date].iloc[-1]
+                except Exception:
+                    pos = rolling_imp.index.get_indexer([anchor_date], method="pad")[0]
+                    importance_scores_for_t = rolling_imp.iloc[pos] if pos != -1 else rolling_imp.iloc[0]
 
                 if importance_scores_for_t.isnull().all():
                     top_k_features = X_full_lagged.columns.tolist()[:n_features]
                 else:
-                    top_k_features = importance_scores_for_t.nlargest(n_features).index.tolist()
+                    cands_sorted = importance_scores_for_t.sort_values(ascending=False).index
+                    top_k_features = [c for c in cands_sorted if c in X_full_lagged.columns][:n_features]
+                    if not top_k_features:
+                        top_k_features = X_full_lagged.columns.tolist()[:n_features]
 
                 # Auf y.index reindexen (robust ggü. Lücken)
                 X_subset = X_full_lagged[top_k_features].reindex(y.index)
 
                 # Head-Trim im Trainingsfenster [0..train_end]
                 X_train_window = X_subset.iloc[:I_t_train]
+
                 first_valid_date = X_train_window.first_valid_index()
                 if first_valid_date is None:
                     first_valid_idx_int = 0
@@ -515,11 +517,17 @@ def run_stageA(
                     kept = redundancy_reduce_greedy(
                         X_sel, hp_corr, D, taus_scr, redundancy_param_eff, scores=scores
                     )
-                    X_red = X_sel.loc[:, kept]
                 else:
-                    X_red = X_sel
+                    kept = keep_cols
 
-                X_red = X_red.reindex(y.index)
+                # *** WICHTIG: Vollständige Matrix für gesamte Zeitachse neu bauen ***
+                X_eng_full = build_engineered_matrix(X, lag_map)
+                if use_rm3_eff:
+                    X_eng_full = apply_rm3(X_eng_full)
+                X_aug_full, _ = _augment_with_target_blocks(X_eng_full, target_block_set_eff)
+
+                # Nur die train-selektierten Spalten aus der vollen Matrix ziehen
+                X_red = X_aug_full.loc[:, kept]
 
                 head_needed_final = max([_lag_of(c) for c in X_red.columns] + [0])
                 taus_model_mask = (taus_base_A - head_needed_final >= 0)
