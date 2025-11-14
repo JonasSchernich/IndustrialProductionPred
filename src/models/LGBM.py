@@ -162,14 +162,25 @@ class ForecastModel:
 
         if val_pair is not None and self._early_stopping_rounds:
             X_val, y_val = val_pair
-            self._reg.fit(
-                X_core, y_core,
-                sample_weight=w_core,
-                eval_set=[(X_val, y_val)],
-                eval_metric="l2",
-                early_stopping_rounds=self._early_stopping_rounds,
-                verbose=False,
-            )
+            try:
+                # Neuere LightGBM-Versionen: Early Stopping via callbacks
+                from lightgbm import early_stopping, log_evaluation
+                self._reg.fit(
+                    X_core, y_core,
+                    sample_weight=w_core,
+                    eval_set=[(X_val, y_val)],
+                    eval_metric="l2",
+                    callbacks=[early_stopping(self._early_stopping_rounds), log_evaluation(period=0)],
+                )
+            except TypeError:
+                # Ältere Versionen: klassischer Parameter
+                self._reg.fit(
+                    X_core, y_core,
+                    sample_weight=w_core,
+                    eval_set=[(X_val, y_val)],
+                    eval_metric="l2",
+                    early_stopping_rounds=self._early_stopping_rounds,
+                )
         else:
             self._reg.fit(X_np, y_np, sample_weight=sw)
 

@@ -18,9 +18,6 @@ from src.features import (
 from src.evaluation import rmse
 from src.io_timesplits import load_tsfresh, load_chronos, load_ar
 
-# (Die neuen Lader werden im Notebook geladen und direkt übergeben)
-
-
 # ------------------------ Module-weiter Cache für Target-only-Blöcke ------------------------
 _TSFRESH_CACHE: Optional[pd.DataFrame] = None
 _CHRONOS_CACHE: Optional[pd.DataFrame] = None
@@ -57,7 +54,6 @@ def _augment_with_target_blocks(X_base: pd.DataFrame, block_set: Optional[List[s
 
     Z_ts, Z_ch, Z_ar = _ensure_target_blocks_loaded()
     chronos_sigma = np.nan
-
     pieces = [X_base]
 
     if "TSFresh" in block_set and Z_ts is not None:
@@ -65,13 +61,12 @@ def _augment_with_target_blocks(X_base: pd.DataFrame, block_set: Optional[List[s
     if "Chronos" in block_set and Z_ch is not None:
         Z_ch_aligned = Z_ch.reindex(X_base.index)
         pieces.append(Z_ch_aligned)
-        col_name = 'chronos_std'
+        col_name = "chronos_std"
         if col_name in Z_ch_aligned.columns and not Z_ch_aligned.empty:
             try:
                 chronos_sigma = float(Z_ch_aligned[col_name].iloc[-1])
             except (IndexError, TypeError, ValueError):
                 chronos_sigma = np.nan
-
     if "AR1" in block_set and Z_ar is not None:
         pieces.append(Z_ar.reindex(X_base.index))
 
@@ -107,141 +102,144 @@ def _mk_paths(model_name: str, cfg: GlobalConfig) -> RunState:
                     out_stageA=outs["stageA"], out_stageB=outs["stageB"])
 
 
+def _hp(cfg: GlobalConfig, model_hp: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Vereinheitlichte Leselogik: Erst HP, sonst cfg, sonst harmloser Fallback.
+    -> Verhindert Stage-A/Stage-B-Drift.
+    """
+    return dict(
+        lag_candidates=tuple(model_hp.get("lag_candidates", getattr(cfg, "lag_candidates", (1, 2, 3, 6, 12)))),
+        top_k_lags_per_feature=int(model_hp.get("top_k_lags_per_feature", getattr(cfg, "top_k_lags_per_feature", 1))),
+        use_rm3=bool(model_hp.get("use_rm3", getattr(cfg, "use_rm3", False))),
+        k1_topk=int(model_hp.get("k1_topk", getattr(cfg, "k1_topk", 200))),
+        screen_threshold=model_hp.get("screen_threshold", getattr(cfg, "screen_threshold", None)),
+        redundancy_method=str(model_hp.get("redundancy_method", getattr(cfg, "redundancy_method", "greedy"))),
+        redundancy_param=float(model_hp.get("redundancy_param", getattr(cfg, "redundancy_param", 0.90))),
+        dr_method=str(model_hp.get("dr_method", getattr(cfg, "dr_method", "none"))),
+        pca_var_target=float(model_hp.get("pca_var_target", getattr(cfg, "pca_var_target", 0.95))),
+        pca_kmax=int(model_hp.get("pca_kmax", getattr(cfg, "pca_kmax", 25))),
+        pls_components=int(model_hp.get("pls_components", getattr(cfg, "pls_components", 2))),
+        target_block_set=model_hp.get("target_block_set"),
+        corr_spec=model_hp.get("corr_spec", getattr(cfg, "corr_spec", None)),
+        n_features_to_use=int(model_hp.get("n_features_to_use", getattr(cfg, "n_features_to_use", 20))),
+        sample_weight_decay=model_hp.get("sample_weight_decay", getattr(cfg, "sample_weight_decay", None)),
+    )
+
+
+def _lag_of(col) -> int:
+    try:
+        s = str(col)
+        if "__lag" not in s:
+            return 0
+        return int(s.split("__lag")[-1])
+    except Exception:
+        return 0
+
+
 # ------------------------
 # PIPELINE 1: Originale FE-Pipeline (Gleis 1 & 2)
 # ------------------------
 def _fit_predict_one_origin_FULL_FE(
-        model_ctor: Callable[[Dict[str, Any]], Any],
-        model_hp: Dict[str, Any],
-        X: pd.DataFrame,
-        y: pd.Series,
-        t_origin: int,
-        cfg: GlobalConfig,
-        corr_spec
+    model_ctor: Callable[[Dict[str, Any]], Any],
+    model_hp: Dict[str, Any],
+    X: pd.DataFrame,
+    y: pd.Series,
+    t_origin: int,
+    cfg: GlobalConfig,
+    corr_spec
 ) -> PredictionLog:
     """
-    (FRÜHER: _fit_predict_one_origin)
     Train-only Design bis inkl. Origin t (0-basiert), fit Modell, prognostiziere y_{t+1}.
-    Gibt ein Dict mit Prognose und Analyse-Metriken zurück.
+    Leakage-frei: trainiert wird auf τ ∈ [head..t-1], niemals τ = t.
     """
-    I_t = t_origin + 1  # 1-basiertes Zählen für die FE-Helfer
+    I_t = t_origin + 1  # 1-basiert für FE-Helfer
+    hp_eff = _hp(cfg, model_hp)
 
-    # -------------------- Effektive FE/DR-Parameter pro Konfiguration --------------------
-    L_eff = tuple(model_hp.get("lag_candidates", getattr(cfg, "lag_candidates", (1, 2, 3, 6, 12))))
-    topk_lags_eff = int(model_hp.get("top_k_lags_per_feature", getattr(cfg, "top_k_lags_per_feature", 1)))
-    use_rm3_eff = bool(model_hp.get("use_rm3", getattr(cfg, "use_rm3", False)))
-    k1_topk_eff = int(model_hp.get("k1_topk", getattr(cfg, "k1_topk", 200)))
-    screen_threshold_eff = model_hp.get("screen_threshold", getattr(cfg, "screen_threshold", None))
-    redundancy_method_eff = str(model_hp.get("redundancy_method", getattr(cfg, "redundancy_method", "greedy")))
-    redundancy_param_eff = float(model_hp.get("redundancy_param", getattr(cfg, "redundancy_param", 0.90)))
-    dr_method_eff = str(model_hp.get("dr_method", getattr(cfg, "dr_method", "none")))
-    pca_var_target_eff = float(model_hp.get("pca_var_target", getattr(cfg, "pca_var_target", 0.95)))
-    pca_kmax_eff = int(model_hp.get("pca_kmax", getattr(cfg, "pca_kmax", 50)))
-    pls_components_eff = int(model_hp.get("pls_components", getattr(cfg, "pls_components", 4)))
-    target_block_set_eff = model_hp.get("target_block_set")
-
-    # -------------------- 1) Lag-Selektion --------------------
-    lag_map, _, D, taus = select_lags_per_feature(
-        X=X, y=y, I_t=I_t, L=L_eff, k=topk_lags_eff,
+    # -------------------- 1) Lag-Selektion (train-only bis t) --------------------
+    lag_map, _, D, taus_dummy = select_lags_per_feature(
+        X=X, y=y, I_t=I_t,
+        L=hp_eff["lag_candidates"], k=hp_eff["top_k_lags_per_feature"],
         corr_spec=corr_spec,
     )
 
-    # -------------------- 2) Feature Engineering --------------------
+    # -------------------- 2) Feature Engineering (train-only bis t) --------------------
     X_eng = build_engineered_matrix(X, lag_map)
-    if use_rm3_eff:
+    if hp_eff["use_rm3"]:
         X_eng = apply_rm3(X_eng)
 
-    # ---- Target-only Blöcke (Parquet) hier anhängen — VOR Screening/Reduktion/DR ----
-    X_aug, chronos_sigma = _augment_with_target_blocks(
-        X_eng.iloc[:I_t],  # Stelle sicher, dass nur Daten bis t_origin verwendet werden
-        target_block_set_eff
-    )
+    X_aug, chronos_sigma = _augment_with_target_blocks(X_eng.iloc[:I_t], hp_eff["target_block_set"])
 
-    # ---- Head-Trim nur auf Basis der Lags/RM (Target-only sind lag=0) ----
-    def _lag_of(col):
-        try:
-            if "__lag" not in str(col):
-                return 0
-            return int(str(col).split('__lag')[-1])
-        except Exception:
-            return 0
-
+    # Head-Trim nach effektivem max Lag (Target-only = lag0)
     max_lag_used = max([_lag_of(c) for c in X_eng.columns] + [0])
-    rm_extra = 2 if use_rm3_eff else 0
+    rm_extra = 2 if hp_eff["use_rm3"] else 0
     head_needed = max_lag_used + rm_extra
 
+    # Kandidaten-τ für Screening: 1..(t-1) (τ=t explizit ausgeschlossen)
     taus_base = np.arange(1, int(I_t) - 1, dtype=int)
-
-    # KORRIGIERT: Head-Trim Off-by-One (Kritik 1)
     taus_scr_mask = (taus_base - head_needed >= 0)
-    if np.sum(taus_scr_mask) == 0:
-        taus_scr = taus_base[-1:].copy() if taus_base.size > 0 else np.array([], dtype=int)
-    else:
-        taus_scr = taus_base[taus_scr_mask]
-
-    if len(taus_scr) == 0:  # Fallback
-        taus_scr = np.array([I_t - 1], dtype=int) if I_t > 0 else np.array([], dtype=int)
+    taus_scr = taus_base[taus_scr_mask] if np.any(taus_scr_mask) else (taus_base[-1:] if taus_base.size > 0 else np.array([], dtype=int))
+    if len(taus_scr) == 0 and I_t > 1:
+        taus_scr = np.array([I_t - 2], dtype=int)  # letzter erlaubter τ ist t-1 → Index I_t-2
 
     # -------------------- 3) Screening K1 (prewhitened) --------------------
     keep_cols, scores = screen_k1(
         X_eng=X_aug, y=y, I_t=I_t, corr_spec=corr_spec, D=D, taus=taus_scr,
-        k1_topk=k1_topk_eff, threshold=screen_threshold_eff
+        k1_topk=hp_eff["k1_topk"], threshold=hp_eff["screen_threshold"]
     )
     X_sel = X_aug.loc[:, keep_cols]
-
     n_sis = len(keep_cols)
 
+    # Optionale Dispersion (robust)
     disp_t = np.nan
-    if not X_sel.empty and taus_scr.size > 0:
+    if not X_sel.empty and len(taus_scr) > 0:
         try:
             X_sel_vals_t = X_sel.iloc[taus_scr].to_numpy(dtype=float)
-            disp_t = float(median_abs_deviation(np.nanstd(X_sel_vals_t, axis=0), nan_policy='omit'))
+            disp_t = float(median_abs_deviation(np.nanstd(X_sel_vals_t, axis=0), nan_policy="omit"))
         except Exception:
             disp_t = np.nan
 
     # -------------------- 4) Redundanzreduktion --------------------
-    if redundancy_method_eff == "greedy":
-        kept = redundancy_reduce_greedy(
-            X_sel, corr_spec, D, taus_scr, redundancy_param_eff, scores=scores
-        )
-        X_red = X_sel.loc[:, kept]
+    if hp_eff["redundancy_method"] == "greedy":
+        kept = redundancy_reduce_greedy(X_sel, corr_spec, D, taus_scr, hp_eff["redundancy_param"], scores=scores)
+        X_red_train = X_sel.loc[:, kept]
     else:
-        X_red = X_sel
         kept = keep_cols
+        X_red_train = X_sel
 
     n_red = len(kept)
 
-    # -------------------- 5) Head-Trim / Train-Design --------------------
-    head_needed_final = max([_lag_of(c) for c in X_red.columns] + [0])
+    # -------------------- 5) Train-Design (τ ∈ [head..t-1]) --------------------
+    # Vollständige Matrix für gesamte Zeitachse neu bauen und dann auf kept-Spalten reduzieren:
+    X_eng_full = build_engineered_matrix(X, lag_map)
+    if hp_eff["use_rm3"]:
+        X_eng_full = apply_rm3(X_eng_full)
+    X_aug_full, _ = _augment_with_target_blocks(X_eng_full, hp_eff["target_block_set"])
+    X_red_full = X_aug_full.loc[:, kept]
 
-    # KORRIGIERT: Head-Trim Off-by-One (Kritik 1)
-    taus_model_mask = (taus_base - head_needed_final >= 0)
-    if np.sum(taus_model_mask) == 0:
-        taus_model = taus_base[-1:].copy() if taus_base.size > 0 else np.array([], dtype=int)
-    else:
-        taus_model = taus_base[taus_model_mask]
+    head_needed_final = max([_lag_of(c) for c in X_red_full.columns] + [0])
+    taus_base_model = np.arange(1, int(I_t) - 1, dtype=int)  # τ=t ausgeschlossen
+    taus_model_mask = (taus_base_model - head_needed_final >= 0)
+    taus_model = taus_base_model[taus_model_mask] if np.any(taus_model_mask) else (taus_base_model[-1:] if taus_base_model.size > 0 else np.array([], dtype=int))
+    if len(taus_model) == 0 and I_t > 1:
+        taus_model = np.array([I_t - 2], dtype=int)
 
-    if len(taus_model) == 0:  # Fallback
-        taus_model = np.array([I_t - 1], dtype=int) if I_t > 0 else np.array([], dtype=int)
+    X_tr = X_red_full.iloc[taus_model, :].copy()
+    y_tr = y.shift(-1).iloc[taus_model]  # train auf (X_τ, y_{τ+1}), τ <= t-1
 
-    X_tr = X_red.iloc[taus_model, :].copy()
-    y_tr = y.shift(-1).iloc[taus_model]
-
-    x_eval = X_red.loc[[y.index[t_origin]], :].copy()
-
+    # Eval-Zeile bei Datum t (Vorhersage y_{t+1})
+    x_eval = X_red_full.loc[[y.index[t_origin]], :].copy()
 
     # -------------------- 6) DR fit (train-only) und anwenden --------------------
     dr_map = fit_dr(
         X_tr,
-        method=dr_method_eff,
-        pca_var_target=pca_var_target_eff,
-        pca_kmax=pca_kmax_eff,
-        pls_components=pls_components_eff
+        method=hp_eff["dr_method"],
+        pca_var_target=hp_eff["pca_var_target"],
+        pca_kmax=hp_eff["pca_kmax"],
+        pls_components=hp_eff["pls_components"],
     )
-
     n_dr = dr_map.n_components_
 
-    if dr_method_eff == "pls":
+    if hp_eff["dr_method"] == "pls":
         Xb_tr = transform_dr(dr_map, X_tr, y=y_tr, fit_pls=True)
         Xb_ev = transform_dr(dr_map, x_eval, y=None, fit_pls=False)
     else:
@@ -249,11 +247,11 @@ def _fit_predict_one_origin_FULL_FE(
         Xb_ev = transform_dr(dr_map, x_eval)
 
     # -------------------- 7) Modell fitten & Prognose --------------------
-    model_hp_with_seed = dict(model_hp)
-    model_hp_with_seed['seed'] = cfg.seed
-    model = model_ctor(model_hp_with_seed)
+    hp_seeded = dict(model_hp)
+    hp_seeded["seed"] = cfg.seed
+    model = model_ctor(hp_seeded)
 
-    weight_decay = model_hp.get("sample_weight_decay")
+    weight_decay = hp_eff["sample_weight_decay"]
     if weight_decay is not None:
         try:
             n_train = len(y_tr)
@@ -267,13 +265,17 @@ def _fit_predict_one_origin_FULL_FE(
 
     y_hat = float(model.predict_one(np.asarray(Xb_ev)))
 
+    # Guardrail (Safety): τ_max + 1 < I_t → kein τ=t im Training
+    if len(taus_model) > 0:
+        assert (int(np.max(taus_model)) + 1) < I_t, "Leakage guard: τ=t im Training erkannt."
+
     return {
         "y_pred": y_hat,
         "n_features_sis": n_sis,
         "n_features_redundant": n_red,
         "n_dr_components": n_dr,
         "ifo_dispersion_t": disp_t,
-        "chronos_sigma_t": chronos_sigma
+        "chronos_sigma_t": chronos_sigma,
     }
 
 
@@ -281,29 +283,27 @@ def _fit_predict_one_origin_FULL_FE(
 # PIPELINE 2: Dynamische FI-Pipeline (Gleis 3)
 # ------------------------
 def _fit_predict_one_origin_DYNAMIC_FI(
-        model_ctor: Callable[[Dict[str, Any]], Any],
-        model_hp: Dict[str, Any],
-        X_full_lagged: pd.DataFrame,  # Erwartet X_eng_full_lagged.parquet
-        y: pd.Series,
-        rolling_imp: pd.DataFrame,  # Erwartet rolling_mean_importance_60m.parquet
-        t_origin: int,
-        cfg: GlobalConfig
+    model_ctor: Callable[[Dict[str, Any]], Any],
+    model_hp: Dict[str, Any],
+    X_full_lagged: pd.DataFrame,  # Erwartet X_eng_full_lagged.parquet
+    y: pd.Series,
+    rolling_imp: pd.DataFrame,    # Erwartet rolling_mean_importance_60m.parquet
+    t_origin: int,
+    cfg: GlobalConfig
 ) -> PredictionLog:
     """
-    Trainiert und prognostiziert für einen Origin t,
-    basierend auf dynamisch ausgewählten Top-K Features.
+    Trainiert und prognostiziert für einen Origin t, basierend auf dynamisch ausgewählten Top-K Features.
+    Leakage-frei: trainiert wird auf τ ∈ [first_valid..t-1], niemals τ = t.
     """
     I_t = t_origin + 1
+    hp_eff = _hp(cfg, model_hp)
+    n_features = int(hp_eff["n_features_to_use"])
 
-    # 1. Hyperparameter auslesen
-    n_features = int(model_hp.get("n_features_to_use", 20))
-
-    # 2. Top-K Features für den prognostizierten Monat (t+1) auswählen
+    # 1) Top-K Features für Zielmonat (t+1) bestimmen
     pred_date = y.index[t_origin + 1]  # FI ist für den Zielmonat definiert
     try:
         importance_scores_for_t = rolling_imp.loc[pred_date]
     except KeyError:
-        # Fallback, falls pred_date in rolling_imp fehlt: nächstfrüheres Datum
         pos = rolling_imp.index.get_indexer([pred_date], method="pad")[0]
         importance_scores_for_t = rolling_imp.iloc[pos] if pos != -1 else rolling_imp.iloc[-1]
 
@@ -312,35 +312,34 @@ def _fit_predict_one_origin_DYNAMIC_FI(
     else:
         top_k_features = importance_scores_for_t.nlargest(n_features).index.tolist()
 
-    # Auf y.index reindexen (robust ggü. Lücken)
+    # 2) Submatrix auf y.index reindexen (robust ggü. Lücken)
     X_subset = X_full_lagged[top_k_features].reindex(y.index)
 
-    # 4. Head-Trim (sehr wichtig, da Lags NaNs am Anfang haben)
+    # 3) Head-Trim im Trainingsfenster: first_valid..t-1 (τ=t ausgeschlossen)
     X_train_window = X_subset.iloc[:I_t]
     first_valid_date = X_train_window.first_valid_index()
+    first_valid_idx_int = 0 if first_valid_date is None else y.index.get_loc(first_valid_date)
 
-    if first_valid_date is None:
-        first_valid_idx_int = 0
-    else:
-        first_valid_idx_int = y.index.get_loc(first_valid_date)
+    # falls alles erst nach t gültig wird, nutze t-1 (mind. 1 Punkt, wenn möglich)
     if first_valid_idx_int >= t_origin:
         first_valid_idx_int = max(0, t_origin - 1)
 
-    X_tr = X_subset.iloc[first_valid_idx_int:I_t]
-    # *** 1-step Label-Shift ***
-    y_tr = y.shift(-1).iloc[first_valid_idx_int:I_t]
+    # Train-Range bis exklusiv I_t-1 (→ inkl. τ = t-1)
+    stop = max(first_valid_idx_int, I_t - 1)
+    X_tr = X_subset.iloc[first_valid_idx_int:stop]
+    y_tr = y.shift(-1).iloc[first_valid_idx_int:stop]
     mask = ~y_tr.isna()
     X_tr, y_tr = X_tr.loc[mask], y_tr.loc[mask]
 
-    # Eval-Zeile labelbasiert
+    # Eval-Zeile (X_t) labelbasiert
     x_eval = X_subset.loc[[y.index[t_origin]]]
 
-    # 5. Modell fitten & Prognose
-    model_hp_with_seed = dict(model_hp)
-    model_hp_with_seed['seed'] = cfg.seed
-    model = model_ctor(model_hp_with_seed)
+    # 4) Modell fitten & Prognose
+    hp_seeded = dict(model_hp)
+    hp_seeded["seed"] = cfg.seed
+    model = model_ctor(hp_seeded)
 
-    weight_decay = model_hp.get("sample_weight_decay")
+    weight_decay = hp_eff["sample_weight_decay"]
     if weight_decay is not None:
         try:
             n_train = len(y_tr)
@@ -354,42 +353,41 @@ def _fit_predict_one_origin_DYNAMIC_FI(
 
     y_hat = float(model.predict_one(x_eval))
 
-    # 6. Logging-Infos zurückgeben (simuliert die FE-Pipeline-Logs)
+    # Guardrail: Stelle sicher, dass letzte Train-τ < t
+    if len(X_tr) > 0:
+        last_train_date = X_tr.index[-1]
+        assert last_train_date < y.index[t_origin], "Leakage guard (Dynamic-FI): τ=t im Training erkannt."
+
     return {
         "y_pred": y_hat,
-        "n_features_sis": n_features,  # Wir verwenden Top-K als "SIS"
-        "n_features_redundant": n_features,  # Kein Redundanz-Filter
-        "n_dr_components": n_features,  # Keine DR
-        "ifo_dispersion_t": np.nan,  # Nicht berechnet
-        "chronos_sigma_t": np.nan  # Nicht verwendet
+        "n_features_sis": n_features,         # Wir verwenden Top-K als "SIS"
+        "n_features_redundant": n_features,   # Kein Redundanz-Filter
+        "n_dr_components": n_features,        # Keine DR
+        "ifo_dispersion_t": np.nan,           # Nicht berechnet
+        "chronos_sigma_t": np.nan             # Nicht verwendet
     }
 
 
-# ------------------------ Stage A (MODIFIZIERT) ------------------------
+# ------------------------ Stage A (blockweises Tuning) ------------------------
 def run_stageA(
-        model_name: str,
-        model_ctor: Callable[[Dict[str, Any]], Any],
-        model_grid: List[Dict[str, Any]],
-        X: pd.DataFrame,
-        y: pd.Series,
-        cfg: GlobalConfig,
-        keep_top_k_final: int = 5,
-        min_survivors_per_block: int = 2,
-        # --- NEUE OPTIONALE ARGUMENTE ---
-        X_full_lagged: Optional[pd.DataFrame] = None,
-        rolling_imp: Optional[pd.DataFrame] = None
+    model_name: str,
+    model_ctor: Callable[[Dict[str, Any]], Any],
+    model_grid: List[Dict[str, Any]],
+    X: pd.DataFrame,
+    y: pd.Series,
+    cfg: GlobalConfig,
+    keep_top_k_final: int = 5,
+    min_survivors_per_block: int = 2,
+    # --- optionale Argumente für Gleis 3 ---
+    X_full_lagged: Optional[pd.DataFrame] = None,
+    rolling_imp: Optional[pd.DataFrame] = None
 ) -> List[Dict[str, Any]]:
     """
     Stage A mit block-basiertem Holdout (ASHA-Stil).
-    Leitet an die korrekte Pipeline weiter (Full FE vs. Dynamic FI).
+    Leakage-frei und konsistent konfiguriert.
     """
-    # --- NEUER LOGIK-SWITCH ---
     use_dynamic_fi = (X_full_lagged is not None and rolling_imp is not None)
-    if use_dynamic_fi:
-        _progress(f"[Stage A] Using DYNAMIC FI pipeline (Gleis 3).")
-    else:
-        _progress(f"[Stage A] Using FULL FE pipeline (Gleis 1 & 2).")
-    # --- ENDE SWITCH ---
+    _progress(f"[Stage A] Using {'DYNAMIC FI (Gleis 3)' if use_dynamic_fi else 'FULL FE (Gleis 1 & 2)'} pipeline.")
 
     agg_scores: Dict[str, List[float]] = {}
     hp_by_key: Dict[str, Any] = {}
@@ -399,12 +397,12 @@ def run_stageA(
     survivors: List[Dict[str, Any]] = list(model_grid)
 
     for (train_end, oos_start, oos_end, block_id) in stageA_blocks(cfg, T):
+        # OOS-Ende auf sicheren Bereich beschränken (max t = T-2, denn wir brauchen y_{t+1})
         oos_end_eff = min(oos_end, T - 1)
         if oos_end_eff < oos_start:
             break
 
-        _progress(
-            f"[Stage A][Block {block_id}] train_end={train_end}, OOS={oos_start}-{oos_end_eff} | configs={len(survivors)}")
+        _progress(f"[Stage A][Block {block_id}] train_end={train_end}, OOS={oos_start}-{oos_end_eff} | configs={len(survivors)}")
         preds_records: List[Dict[str, Any]] = []
         rmse_records: List[Dict[str, Any]] = []
 
@@ -415,137 +413,107 @@ def run_stageA(
             y_true_block, y_pred_block = [], []
             n_months = (oos_end_eff - oos_start + 1)
 
-            hp_with_seed = dict(hp)
-            hp_with_seed['seed'] = cfg.seed
-            model = model_ctor(hp_with_seed)
-            weight_decay = hp.get("sample_weight_decay")
+            hp_eff = _hp(cfg, hp)
+            hp_seeded = dict(hp)
+            hp_seeded["seed"] = cfg.seed
+            model = model_ctor(hp_seeded)
+            weight_decay = hp_eff["sample_weight_decay"]
 
             if use_dynamic_fi:
-                # --- PIPELINE 3: DYNAMIC FI ---
-                n_features = int(hp.get("n_features_to_use", 20))
-
-                # Wichtig: Auswahl ≤ train_end (letzter Trainingsmonat) → kausal
+                # --------- PIPELINE 3: DYNAMIC FI (kausal am Trainingsende) ----------
+                n_features = int(hp_eff["n_features_to_use"])
                 anchor_date = y.index[train_end]
                 try:
-                    importance_scores_for_t = rolling_imp.loc[:anchor_date].iloc[-1]
+                    importance_scores_for_anchor = rolling_imp.loc[:anchor_date].iloc[-1]
                 except Exception:
                     pos = rolling_imp.index.get_indexer([anchor_date], method="pad")[0]
-                    importance_scores_for_t = rolling_imp.iloc[pos] if pos != -1 else rolling_imp.iloc[0]
+                    importance_scores_for_anchor = rolling_imp.iloc[pos] if pos != -1 else rolling_imp.iloc[0]
 
-                if importance_scores_for_t.isnull().all():
+                if importance_scores_for_anchor.isnull().all():
                     top_k_features = X_full_lagged.columns.tolist()[:n_features]
                 else:
-                    cands_sorted = importance_scores_for_t.sort_values(ascending=False).index
+                    cands_sorted = importance_scores_for_anchor.sort_values(ascending=False).index
                     top_k_features = [c for c in cands_sorted if c in X_full_lagged.columns][:n_features]
                     if not top_k_features:
                         top_k_features = X_full_lagged.columns.tolist()[:n_features]
 
-                # Auf y.index reindexen (robust ggü. Lücken)
                 X_subset = X_full_lagged[top_k_features].reindex(y.index)
 
-                # Head-Trim im Trainingsfenster [0..train_end]
                 X_train_window = X_subset.iloc[:I_t_train]
-
                 first_valid_date = X_train_window.first_valid_index()
-                if first_valid_date is None:
-                    first_valid_idx_int = 0
-                else:
-                    first_valid_idx_int = y.index.get_loc(first_valid_date)
+                first_valid_idx_int = 0 if first_valid_date is None else y.index.get_loc(first_valid_date)
                 if first_valid_idx_int >= train_end:
                     first_valid_idx_int = max(0, train_end - 1)
 
-                X_tr = X_subset.iloc[first_valid_idx_int:I_t_train]
-                # *** 1-step Label-Shift: X_t -> y_{t+1} ***
-                y_tr = y.shift(-1).iloc[first_valid_idx_int:I_t_train]
+                # Train bis τ = train_end - 1 (exkl. train_end)
+                stop = max(first_valid_idx_int, I_t_train - 1)
+                X_tr = X_subset.iloc[first_valid_idx_int:stop]
+                y_tr = y.shift(-1).iloc[first_valid_idx_int:stop]
                 mask = ~y_tr.isna()
                 X_tr, y_tr = X_tr.loc[mask], y_tr.loc[mask]
 
-                # Für OOS-Prognosen verwenden wir die reindexte Matrix
-                X_red = X_subset
-
-                Xb_tr = X_tr  # Kein DR in diesem Modus
+                X_red = X_subset  # Serving-Design (keine DR)
+                Xb_tr = X_tr
 
             else:
-                # --- PIPELINE 1/2: FULL FE (Original-Code) ---
-                L_eff = tuple(hp.get("lag_candidates", getattr(cfg, "lag_candidates", (1, 2, 3, 6, 12))))
-                topk_lags_eff = int(hp.get("top_k_lags_per_feature", getattr(cfg, "top_k_lags_per_feature", 1)))
-                use_rm3_eff = bool(hp.get("use_rm3", getattr(cfg, "use_rm3", True)))
-                k1_topk_eff = int(hp.get("k1_topk", getattr(cfg, "k1_topk", 200)))
-                screen_threshold_eff = hp.get("screen_threshold", getattr(cfg, "screen_threshold", None))
-                redundancy_method_eff = str(hp.get("redundancy_method", getattr(cfg, "redundancy_method", "greedy")))
-                redundancy_param_eff = float(hp.get("redundancy_param", getattr(cfg, "redundancy_param", 0.90)))
-                dr_method_eff = str(hp.get("dr_method", getattr(cfg, "dr_method", "none")))
-                pca_var_target_eff = float(hp.get("pca_var_target", getattr(cfg, "pca_var_target", 0.95)))
-                pca_kmax_eff = int(hp.get("pca_kmax", getattr(cfg, "pca_kmax", 25)))
-                pls_components_eff = int(hp.get("pls_components", getattr(cfg, "pls_components", 2)))
-                target_block_set_eff = hp.get("target_block_set")
-                hp_corr = hp.get("corr_spec", cfg.corr_spec)
-
-                lag_map, _, D, taus = select_lags_per_feature(
-                    X, y, I_t=I_t_train, L=L_eff, k=topk_lags_eff, corr_spec=hp_corr
+                # --------- PIPELINE 1/2: FULL FE ----------
+                # 1) Lags bis Trainende wählen
+                lag_map, _, D, taus_dummy = select_lags_per_feature(
+                    X, y, I_t=I_t_train,
+                    L=hp_eff["lag_candidates"], k=hp_eff["top_k_lags_per_feature"], corr_spec=hp_eff["corr_spec"]
                 )
+
+                # 2) Train-Features bauen (bis t=train_end)
                 X_eng = build_engineered_matrix(X, lag_map)
-                if use_rm3_eff: X_eng = apply_rm3(X_eng)
-
-                X_aug, _ = _augment_with_target_blocks(X_eng.iloc[:I_t_train], target_block_set_eff)
-
-                def _lag_of(col):
-                    try:
-                        if "__lag" not in str(col): return 0
-                        return int(str(col).split('__lag')[-1])
-                    except Exception:
-                        return 0
+                if hp_eff["use_rm3"]:
+                    X_eng = apply_rm3(X_eng)
+                X_aug, _ = _augment_with_target_blocks(X_eng.iloc[:I_t_train], hp_eff["target_block_set"])
 
                 max_lag_used = max([_lag_of(c) for c in X_eng.columns] + [0])
-                rm_extra = 2 if use_rm3_eff else 0
+                rm_extra = 2 if hp_eff["use_rm3"] else 0
                 head_needed = max_lag_used + rm_extra
-                taus_base_A = np.arange(1, int(I_t_train), dtype=int)
 
+                # Screening-τ: 1..(train_end-1)
+                taus_base_A = np.arange(1, int(I_t_train) - 1, dtype=int)
                 taus_scr_mask = (taus_base_A - head_needed >= 0)
-                if np.sum(taus_scr_mask) == 0:
-                    taus_scr = taus_base_A[-1:].copy() if taus_base_A.size > 0 else np.array([], dtype=int)
-                else:
-                    taus_scr = taus_base_A[taus_scr_mask]
+                taus_scr = taus_base_A[taus_scr_mask] if np.any(taus_scr_mask) else (taus_base_A[-1:] if taus_base_A.size > 0 else np.array([], dtype=int))
+                if len(taus_scr) == 0 and I_t_train > 1:
+                    taus_scr = np.array([I_t_train - 2], dtype=int)
 
                 keep_cols, scores = screen_k1(
-                    X_eng=X_aug, y=y, I_t=I_t_train, corr_spec=hp_corr, D=D, taus=taus_scr,
-                    k1_topk=k1_topk_eff, threshold=screen_threshold_eff
+                    X_eng=X_aug, y=y, I_t=I_t_train, corr_spec=hp_eff["corr_spec"], D=D, taus=taus_scr,
+                    k1_topk=hp_eff["k1_topk"], threshold=hp_eff["screen_threshold"]
                 )
                 X_sel = X_aug.loc[:, keep_cols]
 
-                if redundancy_method_eff == "greedy":
-                    kept = redundancy_reduce_greedy(
-                        X_sel, hp_corr, D, taus_scr, redundancy_param_eff, scores=scores
-                    )
+                if hp_eff["redundancy_method"] == "greedy":
+                    kept = redundancy_reduce_greedy(X_sel, hp_eff["corr_spec"], D, taus_scr, hp_eff["redundancy_param"], scores=scores)
                 else:
                     kept = keep_cols
 
-                # *** WICHTIG: Vollständige Matrix für gesamte Zeitachse neu bauen ***
+                # 3) Vollständige Matrix für gesamte Zeitachse neu bauen (wichtig für OOS!)
                 X_eng_full = build_engineered_matrix(X, lag_map)
-                if use_rm3_eff:
+                if hp_eff["use_rm3"]:
                     X_eng_full = apply_rm3(X_eng_full)
-                X_aug_full, _ = _augment_with_target_blocks(X_eng_full, target_block_set_eff)
-
-                # Nur die train-selektierten Spalten aus der vollen Matrix ziehen
+                X_aug_full, _ = _augment_with_target_blocks(X_eng_full, hp_eff["target_block_set"])
                 X_red = X_aug_full.loc[:, kept]
 
                 head_needed_final = max([_lag_of(c) for c in X_red.columns] + [0])
-                taus_model_mask = (taus_base_A - head_needed_final >= 0)
-                if np.sum(taus_model_mask) == 0:
-                    taus_model = taus_base_A[-1:].copy() if taus_base_A.size > 0 else np.array([], dtype=int)
-                else:
-                    taus_model = taus_base_A[taus_model_mask]
+                taus_base_model = np.arange(1, int(I_t_train) - 1, dtype=int)
+                taus_model_mask = (taus_base_model - head_needed_final >= 0)
+                taus_model = taus_base_model[taus_model_mask] if np.any(taus_model_mask) else (taus_base_model[-1:] if taus_base_model.size > 0 else np.array([], dtype=int))
+                if len(taus_model) == 0 and I_t_train > 1:
+                    taus_model = np.array([I_t_train - 2], dtype=int)
 
                 X_tr = X_red.iloc[taus_model, :].copy()
-                y_tr = y.shift(-1).iloc[taus_model]  # y_{t+1}
+                y_tr = y.shift(-1).iloc[taus_model]
 
                 dr_map = fit_dr(
-                    X_tr, method=dr_method_eff,
-                    pca_var_target=pca_var_target_eff, pca_kmax=pca_kmax_eff,
-                    pls_components=pls_components_eff
+                    X_tr, method=hp_eff["dr_method"],
+                    pca_var_target=hp_eff["pca_var_target"], pca_kmax=hp_eff["pca_kmax"],
+                    pls_components=hp_eff["pls_components"]
                 )
-                Xb_tr = transform_dr(dr_map, X_tr, y_tr, fit_pls=(dr_method_eff == "pls"))
-            # --- ENDE LOGIK-SWITCH ---
+                Xb_tr = transform_dr(dr_map, X_tr, y_tr, fit_pls=(hp_eff["dr_method"] == "pls"))
 
             # --- Gemeinsamer Fit & Predict-Teil ---
             if weight_decay is not None:
@@ -560,26 +528,22 @@ def run_stageA(
                 model.fit(Xb_tr if not use_dynamic_fi else X_tr, y_tr.to_numpy(dtype=float))
 
             # ---- Vorhersagen für den gesamten Block mit demselben Fit ----
-            # KORRIGIERT: OOS-Schleife (Kritik 2)
-            for t in range(oos_start - 1, oos_end_eff):
+            for t in range(oos_start - 1, oos_end_eff):  # t läuft bis max T-2
                 date_t = y.index[t]
                 x_eval = X_red.loc[[date_t]].copy()
-
-                if not use_dynamic_fi:  # DR anwenden im Full-FE-Zweig
+                if not use_dynamic_fi:
                     Xb_eval = transform_dr(dr_map, x_eval, fit_pls=False)
-                else:  # Gleis 3 hat keine DR
+                else:
                     Xb_eval = x_eval
-
                 y_hat = model.predict_one(Xb_eval)
                 y_true = float(y.iloc[t + 1])
+
                 y_true_block.append(y_true)
                 y_pred_block.append(float(y_hat))
 
                 done = len(y_true_block)
                 if (done % 5 == 0) or (done == n_months):
-                    _progress(
-                        f"    · Month {done}/{n_months} processed | running...RMSE={rmse(np.array(y_true_block), np.array(y_pred_block)):.4f}"
-                    )
+                    _progress(f"    · Month {done}/{n_months} processed | running...RMSE={rmse(np.array(y_true_block), np.array(y_pred_block)):.4f}")
 
                 preds_records.append({
                     "block": f"block{block_id}", "t": t,
@@ -598,7 +562,7 @@ def run_stageA(
             agg_scores.setdefault(key, []).append(float(score))
             hp_by_key[key] = hp
 
-        # (Rest von Stage A: CSV-Exports, Halving... bleibt exakt gleich)
+        # (CSV-Exports & Halving)
         preds_df = pd.DataFrame(preds_records)
         rmse_df = pd.DataFrame(rmse_records)
         preds_path = rs.out_stageA / f"block{block_id}" / "preds.csv"
@@ -620,7 +584,7 @@ def run_stageA(
         survivors = [hp for i, hp in enumerate(survivors, start=1) if i in keep_ids]
         _progress(f"[Stage A][Block {block_id}] kept {len(survivors)} configs (floor={min_survivors_per_block}).")
 
-    # (Finale Freeze-Logik bleibt exakt gleich)
+    # (Finale Freeze-Logik)
     def _key(hp):
         return json.dumps(hp, sort_keys=True)
 
@@ -640,30 +604,25 @@ def run_stageA(
     return shortlist
 
 
-# ------------------------ Stage B (MODIFIZIERT) ------------------------
+# ------------------------ Stage B (Online-Auswahl) ------------------------
 def run_stageB(
-        model_name: str,
-        model_ctor: Callable[[Dict[str, Any]], Any],
-        shortlist: List[Dict[str, Any]],
-        X: pd.DataFrame,
-        y: pd.Series,
-        cfg: GlobalConfig,
-        max_months: Optional[int] = None,
-        # --- NEUE OPTIONALE ARGUMENTE ---
-        X_full_lagged: Optional[pd.DataFrame] = None,
-        rolling_imp: Optional[pd.DataFrame] = None
+    model_name: str,
+    model_ctor: Callable[[Dict[str, Any]], Any],
+    shortlist: List[Dict[str, Any]],
+    X: pd.DataFrame,
+    y: pd.Series,
+    cfg: GlobalConfig,
+    max_months: Optional[int] = None,
+    # --- optionale Argumente für Gleis 3 ---
+    X_full_lagged: Optional[pd.DataFrame] = None,
+    rolling_imp: Optional[pd.DataFrame] = None
 ) -> None:
     """
     Stage B mit gefrorener Shortlist und Online-Auswahl.
-    Leitet an die korrekte Pipeline weiter (Full FE vs. Dynamic FI).
+    Leakage-frei, konsistent zu Stage A, mit Guardrails.
     """
-    # --- NEUER LOGIK-SWITCH ---
     use_dynamic_fi = (X_full_lagged is not None and rolling_imp is not None)
-    if use_dynamic_fi:
-        _progress(f"[Stage B] Using DYNAMIC FI pipeline (Gleis 3).")
-    else:
-        _progress(f"[Stage B] Using FULL FE pipeline (Gleis 1 & 2).")
-    # --- ENDE SWITCH ---
+    _progress(f"[Stage B] Using {'DYNAMIC FI (Gleis 3)' if use_dynamic_fi else 'FULL FE (Gleis 1 & 2)'} pipeline.")
 
     rs = _mk_paths(model_name, cfg)
     T = len(y)
@@ -689,14 +648,11 @@ def run_stageB(
 
     rolling_errors: Dict[int, List[float]] = {i: [] for i in range(len(shortlist))}
 
-    # KORRIGIERTE _wrmse Funktion
+    # Exponentiell abgezinste RMSE über 'window' Fehler mit 'decay'
     def _wrmse(i: int) -> float:
-        """Exponentiell abgezinste RMSE über 'window' Fehler mit 'decay'."""
-        # Annahme: rolling_errors[i] enthält bereits QUADRIERTE Fehler (SEs)
         errs = rolling_errors[i][-window:] if window > 0 else rolling_errors[i]
         if len(errs) == 0:
             return float("inf")
-        # Jüngere Fehler höher gewichten (w[0] = ältestes, w[-1] = jüngstes)
         w = np.array([decay ** k for k in range(len(errs) - 1, -1, -1)], dtype=float)
         w_sum = w.sum()
         if w_sum <= 0:
@@ -712,8 +668,6 @@ def run_stageB(
         # Vorhersagen für alle Kandidaten
         yhat_by_cfg: List[Tuple[int, float, float, PredictionLog]] = []
         for i, hp in enumerate(shortlist):
-
-            # --- NEUER LOGIK-SWITCH (PIPELINE-AUSWAHL) ---
             if use_dynamic_fi:
                 result_dict = _fit_predict_one_origin_DYNAMIC_FI(
                     model_ctor=model_ctor, model_hp=hp,
@@ -724,19 +678,18 @@ def run_stageB(
                 result_dict = _fit_predict_one_origin_FULL_FE(
                     model_ctor=model_ctor, model_hp=hp,
                     X=X, y=y, t_origin=t, cfg=cfg,
-                    corr_spec=hp.get("corr_spec", cfg.corr_spec)
+                    corr_spec=_hp(cfg, hp)["corr_spec"]
                 )
-            # --- ENDE LOGIK-SWITCH ---
 
             y_hat = result_dict["y_pred"]
             se = (y_truth - y_hat) ** 2
             yhat_by_cfg.append((i, y_hat, se, result_dict))
 
-        # Rolling-Fehler aktualisieren (nur SEs speichern)
+        # Rolling-Fehler aktualisieren
         for i, _, se, _ in yhat_by_cfg:
             rolling_errors[i].append(se)
 
-        # ---- Auswahl nach decayed metric ----
+        # Auswahl nach decayed metric
         wrmse_win = [_wrmse(i) for i in range(len(shortlist))]
         new_idx = int(np.argmin(wrmse_win))
         new_rmse = wrmse_win[new_idx] if new_idx < len(wrmse_win) else float('inf')
@@ -756,7 +709,7 @@ def run_stageB(
             last_switch_t = t
             switched = True
 
-        # Preds-CSV: alle Kandidaten (ERWEITERTES LOGGING)
+        # Preds-CSV
         rows = []
         for i, y_hat, _, result_dict in yhat_by_cfg:
             rows.append({
@@ -767,7 +720,6 @@ def run_stageB(
                 "wrmse_window": wrmse_win[i],
                 "window_len": len(rolling_errors[i]),
                 "selection_mode": selection_mode,
-                # --- Log-Spalten (aus beiden Pipelines) ---
                 "n_features_sis": result_dict["n_features_sis"],
                 "n_features_redundant": result_dict["n_features_redundant"],
                 "n_dr_components": result_dict["n_dr_components"],
