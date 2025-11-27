@@ -99,13 +99,14 @@ def load_tsfresh() -> pd.DataFrame:
 
 def load_chronos() -> pd.DataFrame:
     """Lädt Chronos und stellt DatetimeIndex sicher."""
-    return _load_parquet_with_datetime_index("chronos_bolt.parquet", date_col="date")
-
+    df = _load_parquet_with_datetime_index("chronos_bolt.parquet", date_col="date")
+    return df
 
 def load_ar() -> pd.DataFrame:
     """Lädt das AR.parquet-Feature und stellt DatetimeIndex sicher."""
-    return _load_parquet_with_datetime_index("AR.parquet", date_col="date")
-
+    df = _load_parquet_with_datetime_index("AR.parquet", date_col="date")
+    df = df
+    return df
 
 
 def load_full_lagged_features(base_dir: Path | None = None) -> pd.DataFrame:

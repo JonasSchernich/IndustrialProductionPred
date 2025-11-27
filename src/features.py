@@ -4,7 +4,6 @@ from typing import Optional, Dict, Any, Tuple, List
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
-from numpy.linalg import lstsq
 
 
 # --------------------------------------------------------------------------------------
@@ -17,27 +16,6 @@ def _spec_get(spec: Any, key: str, default=None):
     if isinstance(spec, dict):
         return spec.get(key, default)
     return getattr(spec, key, default)
-
-
-def _nuisance_matrix(y: pd.Series, taus: np.ndarray) -> np.ndarray:
-    """Erstellt die Nuisance-Matrix [1, y_lag1] für gegebene Zeitstempel."""
-    if taus.size == 0:
-        return np.empty((0, 2), dtype=float)
-    y_lag1 = y.shift(1).iloc[taus].to_numpy(dtype=float)
-    # y_lag1 kann NaNs am Anfang haben (wenn taus=0 oder 1 startet)
-    # Ersetze NaNs in y_lag1 (Nuisance) mit 0.0
-    y_lag1 = np.nan_to_num(y_lag1, nan=0.0, posinf=0.0, neginf=0.0)
-    ones = np.ones((len(taus), 1), dtype=float)
-    return np.concatenate([ones, y_lag1.reshape(-1, 1)], axis=1)
-
-
-def _residualize_vec(v: np.ndarray, D: np.ndarray) -> np.ndarray:
-    """Residualisiere Vektor v auf Nuisance-Matrix D via OLS."""
-    if len(v) == 0 or D.size == 0 or v.shape[0] != D.shape[0]:
-        return np.asarray(v, dtype=float)
-    # lstsq ist robust bei (nahezu) singulären D
-    beta, *_ = lstsq(D, v, rcond=None)
-    return v - D @ beta
 
 
 def _corr_equal_weight(x: np.ndarray, y: np.ndarray) -> float:
@@ -55,14 +33,12 @@ def _corr_equal_weight(x: np.ndarray, y: np.ndarray) -> float:
 
 
 def _corr_ewma(x: np.ndarray, y: np.ndarray, lam: float) -> float:
-    """EWMA-gewichtete Korrelation (stabile Ein-Pass-Variante)."""
     x = np.asarray(x, dtype=float).ravel()
     y = np.asarray(y, dtype=float).ravel()
     n = min(len(x), len(y))
     if n <= 1:
         return 0.0
 
-    # Nimm die letzten n Punkte
     x = x[-n:]
     y = y[-n:]
 
@@ -71,9 +47,8 @@ def _corr_ewma(x: np.ndarray, y: np.ndarray, lam: float) -> float:
     cxx = 0.0
     cyy = 0.0
     cxy = 0.0
-    alpha = 1.0 - lam  # (1-lam)
+    alpha = 1.0 - lam
 
-    # Starte mit dem ersten Wert als initialem Mittelwert
     mx = x[0]
     my = y[0]
 
@@ -89,140 +64,59 @@ def _corr_ewma(x: np.ndarray, y: np.ndarray, lam: float) -> float:
 
         cxx = lam * cxx + alpha * dx * (xi - mx)
         cyy = lam * cyy + alpha * dy * (yi - my)
-        cxy = lam * cxy + alpha * dx * (yi - my)  # Welford's cross-product update
+        cxy = lam * cxy + alpha * dx * (yi - my)
 
     den = np.sqrt(cxx * cyy)
     return 0.0 if den <= 0.0 else float(cxy / den)
 
 
-# --------------------------------------------------------------------------------------
-# pw_corr mit optionalem Window + robustem EWMA-Handling
-# --------------------------------------------------------------------------------------
-
-def pw_corr(r_x: np.ndarray, r_y: np.ndarray, spec: Any) -> float:
-    """Pairwise correlation wrapper with optional windowing and EWMA.
-    Supports spec keys: mode in {"expanding","ewma","ewm"}, lambda/lam in (0,1),
-    and optional integer 'window' to restrict to the most recent W points.
+def pw_corr(x: np.ndarray, y: np.ndarray, spec: Any) -> float:
     """
-    # Coerce to 1D float arrays
-    r_x = np.asarray(r_x, dtype=float).ravel()
-    r_y = np.asarray(r_y, dtype=float).ravel()
-    n = min(len(r_x), len(r_y))
+    Berechnet Korrelation (Pearson).
+    Entweder Expanding (Equal Weight) oder EWMA.
+    Window-Parameter wurde entfernt.
+    """
+    x = np.asarray(x, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+    n = min(len(x), len(y))
     if n <= 1:
         return 0.0
-
-    # --- Windowing (optional) ---
-    W = _spec_get(spec, "window", default=None)
-    try:
-        W = int(W) if W is not None else 0
-    except Exception:
-        W = 0
-    if W > 0 and n > W:
-        r_x = r_x[-W:]
-        r_y = r_y[-W:]
-        n = W
 
     mode = _spec_get(spec, "mode", "expanding")
     if mode == "ewma" or mode == "ewm":
         lam_key1 = _spec_get(spec, "lam")
         lam_key2 = _spec_get(spec, "lambda", 0.98)
         lam = float(lam_key1 if lam_key1 is not None else lam_key2)
-        lam = max(1e-6, min(1.0 - 1e-6, lam))  # Clamp lam in (0, 1)
+        lam = max(1e-6, min(1.0 - 1e-6, lam))
 
-        return _corr_ewma(r_x, r_y, lam)
+        return _corr_ewma(x, y, lam)
 
-    return _corr_equal_weight(r_x, r_y)
+    return _corr_equal_weight(x, y)
 
 
 # --------------------------------------------------------------------------------------
-# select_lags_per_feature – saubere Masken & gemeinsame Basis
-# (Diese Funktion war bereits korrekt und dient als Vorbild)
+# select_lags_per_feature (VEREINFACHT: Keine Selection mehr, nur Mapping)
 # --------------------------------------------------------------------------------------
 
 def select_lags_per_feature(
         X: pd.DataFrame,
-        y: pd.Series,
-        I_t: int,
-        L: Tuple[int, ...],
-        k: int,
-        corr_spec: Any,
-) -> Tuple[Dict[str, List[int]], Dict[str, float], np.ndarray, np.ndarray]:
-    """Select per-feature top-k lags by |corr(r_x, r_y)| on a valid common basis.
-    (Diese Funktion war bereits korrekt implementiert)
+        L: Tuple[int, ...]
+) -> Dict[str, List[int]]:
     """
-    taus_base = np.arange(1, int(I_t) - 1, dtype=int)
-    if taus_base.size < 2:  # Brauchen mind. 2 Datenpunkte
-        return {}, {}, np.empty((0, 2), dtype=float), taus_base
-
-    y_next_base = y.shift(-1).iloc[taus_base].to_numpy(dtype=float)
-    valid_y_mask = ~np.isnan(y_next_base)
-    taus_base = taus_base[valid_y_mask]
-    y_next_base = y_next_base[valid_y_mask]
-    if taus_base.size < 2:
-        return {}, {}, _nuisance_matrix(y, taus_base), taus_base
-
-    lag_artifacts: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-    min_lag = min(L) if L else 0
-
-    taus_for_k1_mask = (taus_base >= min_lag)
-    if np.sum(taus_for_k1_mask) == 0:
-        taus_for_k1 = taus_base[-1:].copy()
-    else:
-        taus_for_k1 = taus_base[taus_for_k1_mask]
-
-    D_for_k1 = _nuisance_matrix(y, taus_for_k1)
-
-    for lag in set(L + (0,)):  # include 0 for screen_k1
-        lag_mask = (taus_base >= lag)
-        if np.sum(lag_mask) < 2:
-            continue
-        taus_eff = taus_base[lag_mask]
-        y_next_eff = y_next_base[lag_mask]
-        D_eff = _nuisance_matrix(y, taus_eff)
-        r_y_eff = _residualize_vec(y_next_eff, D_eff)
-        lag_artifacts[lag] = (r_y_eff, D_eff, taus_eff)
-
+    Weist jedem Feature in X einfach alle Lags aus L zu.
+    Keine komplexe Korrelationsberechnung oder Top-K Auswahl mehr.
+    """
+    all_lags = sorted(list(L))
     lag_map: Dict[str, List[int]] = {}
-    scores_any: Dict[str, float] = {}
 
     for col in X.columns:
-        s = X[col].astype(float)
-        lag_scores: List[Tuple[float, int]] = []
-        for lag in L:
-            arts = lag_artifacts.get(lag)
-            if arts is None:
-                lag_scores.append((0.0, lag))
-                continue
-            r_y_eff, D_eff, taus_eff = arts
+        lag_map[col] = all_lags
 
-            # Shift once, slice exakt auf gültige taus, dann maskieren
-            x = s.shift(lag).iloc[taus_eff].to_numpy(dtype=float)
-            x_mask = ~np.isnan(x)
-            if np.sum(x_mask) < 2:
-                lag_scores.append((0.0, lag))
-                continue
-
-            x_eff = x[x_mask]
-            r_y_eff_masked = r_y_eff[x_mask]
-            D_eff_masked = D_eff[x_mask, :]
-
-            r_x_eff = _residualize_vec(x_eff, D_eff_masked)
-            sc = abs(pw_corr(r_x_eff, r_y_eff_masked, corr_spec))
-            lag_scores.append((sc, lag))
-
-        lag_scores.sort(key=lambda z: z[0], reverse=True)
-        chosen = [lag for (_, lag) in lag_scores[:max(1, int(k))]]
-        lag_map[col] = sorted(set(chosen))
-        scores_any[col] = lag_scores[0][0] if lag_scores else 0.0
-
-    if 0 in lag_artifacts:
-        _, D_for_k1, taus_for_k1 = lag_artifacts[0]
-
-    return lag_map, scores_any, D_for_k1, taus_for_k1
+    return lag_map
 
 
 # --------------------------------------------------------------------------------------
-# Restliche Funktionen
+# Feature Matrix Build
 # --------------------------------------------------------------------------------------
 
 def build_engineered_matrix(X: pd.DataFrame, lag_map: Dict[str, List[int]]) -> pd.DataFrame:
@@ -234,71 +128,42 @@ def build_engineered_matrix(X: pd.DataFrame, lag_map: Dict[str, List[int]]) -> p
     return pd.DataFrame(out, index=X.index)
 
 
-def apply_rm3(X_eng: pd.DataFrame) -> pd.DataFrame:
-    return X_eng.rolling(window=3, min_periods=1).mean()
-
-
-def _align_D_to_taus(D: np.ndarray, taus: np.ndarray) -> np.ndarray:
-    n = len(taus)
-    if D.shape[0] == n:
-        return D
-    if D.shape[0] > n:
-        return D[-n:, :]
-    raise ValueError(f"D has fewer rows ({D.shape[0]}) than taus ({n}).")
-
-
 # --------------------------------------------------------------------------------------
-# screen_k1 (KORRIGIERT nach Ihrem Vorschlag)
+# screen_k1 (SIS)
 # --------------------------------------------------------------------------------------
+
 def screen_k1(
         X_eng: pd.DataFrame,
         y: pd.Series,
         I_t: int,
         corr_spec: Any,
-        D: np.ndarray,
         taus: np.ndarray,
         k1_topk: Optional[int] = 200,
         threshold: Optional[float] = None,
 ) -> Tuple[List[str], Dict[str, float]]:
     """
-    Score je Spalte: |corr(r_x, r_y)| auf 'taus' (prewhitened).
-    Auswahl top-k oder per Schwelle.
-    FIX: Verwendet Maskierung (Pairwise-Deletion) und berechnet r_x und r_y
-    auf der exakt gleichen, paarweise-gültigen Basis IN DER SCHLEIFE.
+    Berechnet Korrelation direkt auf Rohdaten (x_eff, y_eff) und filtert die Top-K Features.
     """
     if len(taus) == 0 or X_eng.shape[1] == 0:
         return [], {}
 
     y_next = y.shift(-1).iloc[taus].to_numpy(dtype=float)
-    D_slice = _align_D_to_taus(D, taus)
-
-    # Basis-Maske für y (sollte von select_lags_per_feature[0] kommen, aber zur Sicherheit)
     y_mask_base = ~np.isnan(y_next)
 
     scores: Dict[str, float] = {}
     for col in X_eng.columns:
         xvals = X_eng[col].iloc[taus].to_numpy(dtype=float)
-
-        # --- FIX: Pairwise-Maske (y UND x) ---
         x_mask_col = ~np.isnan(xvals)
         mask = y_mask_base & x_mask_col
 
-        if np.sum(mask) < 2:  # n_min = 2
+        if np.sum(mask) < 2:
             scores[col] = 0.0
             continue
 
-        # Wende die gemeinsame Maske auf alle Komponenten an
         y_eff = y_next[mask]
         x_eff = xvals[mask]
-        D_m = D_slice[mask, :]
 
-        # Residualisiere BEIDE auf der exakt gleichen Basis
-        r_y_m = _residualize_vec(y_eff, D_m)
-        r_x_m = _residualize_vec(x_eff, D_m)
-
-        # Korreliere die maskierten Residuen
-        scores[col] = abs(pw_corr(r_x_m, r_y_m, corr_spec))
-        # --- ENDE FIX ---
+        scores[col] = abs(pw_corr(x_eff, y_eff, corr_spec))
 
     cols = list(X_eng.columns)
     if threshold is not None:
@@ -310,25 +175,21 @@ def screen_k1(
 
 
 # --------------------------------------------------------------------------------------
-# redundancy_reduce_greedy (KORRIGIERT nach gleicher Logik)
+# redundancy_reduce_greedy
 # --------------------------------------------------------------------------------------
+
 def redundancy_reduce_greedy(
         X_sel: pd.DataFrame,
         corr_spec: Any,
-        D: np.ndarray,
         taus: np.ndarray,
         redundancy_param: float = 0.90,
         scores: Optional[Dict[str, float]] = None,
 ) -> List[str]:
     """
-    Greedy: behalte Spalten in absteigender Score-Reihenfolge, solange
-    |corr_prewhite(r_x_j, r_x_k)| <= redundancy_param für bereits behaltene.
-    FIX: Verwendet paarweise Maskierung statt np.nan_to_num.
+    Greedy Redundanzreduktion basierend auf paarweiser Korrelation.
     """
     if X_sel.shape[1] <= 1:
         return list(X_sel.columns)
-
-    D_slice = _align_D_to_taus(D, taus)
 
     order = list(X_sel.columns)
     if scores:
@@ -336,54 +197,37 @@ def redundancy_reduce_greedy(
     else:
         order.sort()
 
-    # --- FIX: Speichere Rohdaten (X_raw) statt fehlerhafter Residuen (R) ---
     X_raw: Dict[str, np.ndarray] = {}
     for c in order:
         X_raw[c] = X_sel[c].iloc[taus].to_numpy(dtype=float)
-    # --- ENDE FIX ---
 
     kept: List[str] = []
     for c in order:
         ok = True
-        xvals_c = X_raw[c]  # Rohdaten für Kandidat c
+        xvals_c = X_raw[c]
 
         for kcol in kept:
-            xvals_k = X_raw[kcol]  # Rohdaten für bereits behaltene Spalte k
-
-            # --- FIX: Pairwise-Maskierung und Residualisierung ---
-            # 1. Gemeinsame Maske für c und k
+            xvals_k = X_raw[kcol]
             mask = (~np.isnan(xvals_c)) & (~np.isnan(xvals_k))
 
-            if np.sum(mask) < 2:  # n_min = 2
-                # Nicht genug Daten für Vergleich.
-                # Annahme: Nicht redundant (sonst würden Features mit
-                # unterschiedlichen NaN-Mustern fälschlich entfernt)
+            if np.sum(mask) < 2:
                 continue
 
-                # 2. Maske auf Daten und Nuisance-Matrix anwenden
             x_c_masked = xvals_c[mask]
             x_k_masked = xvals_k[mask]
-            D_slice_masked = D_slice[mask, :]
 
-            # 3. BEIDE auf der exakt gleichen Basis residualisieren
-            r_x_c = _residualize_vec(x_c_masked, D_slice_masked)
-            r_x_k = _residualize_vec(x_k_masked, D_slice_masked)
-
-            # 4. Korrelation der (jetzt sauberen) Residuen
-            if abs(pw_corr(r_x_c, r_x_k, corr_spec)) > float(redundancy_param):
+            if abs(pw_corr(x_c_masked, x_k_masked, corr_spec)) > float(redundancy_param):
                 ok = False
                 break
-            # --- ENDE FIX ---
 
         if ok:
             kept.append(c)
     return kept
 
 
-# ==========================================================
-# DR (Standardisierung, PCA/PLS)
-# (Keine Änderungen hier notwendig)
-# ==========================================================
+# --------------------------------------------------------------------------------------
+# DR (Unverändert)
+# --------------------------------------------------------------------------------------
 @dataclass
 class _DRMap:
     method: str
@@ -392,7 +236,7 @@ class _DRMap:
     scaler_mean: Optional[np.ndarray] = None
     scaler_std: Optional[np.ndarray] = None
     pca_components_: Optional[np.ndarray] = None
-    pls_model: Optional[object] = None  # sklearn PLSRegression
+    pls_model: Optional[object] = None
 
 
 def _fit_standardizer(X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
@@ -413,10 +257,6 @@ def fit_dr(
         pca_kmax: int = 50,
         pls_components: int = 4,
 ) -> _DRMap:
-    """
-    Train-only Fit der DR. Für PCA/PLS vorher standardisieren (train-Stats),
-    danach Eingaben immer auf finite Werte clippen.
-    """
     cols = list(X_tr.columns)
     n_samples, n_features = X_tr.shape
 
@@ -433,17 +273,16 @@ def fit_dr(
         Z = _apply_standardizer(X_tr, mu, sd)
         Z = np.nan_to_num(Z, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Clamping für PCA (n_components darf nicht > n_samples oder n_features sein)
         k_max_effective = min(n_samples, n_features, int(pca_kmax))
 
         pca = PCA(svd_solver="full")
         pca.fit(Z)
         evr = pca.explained_variance_ratio_
         k = int(np.searchsorted(np.cumsum(evr), pca_var_target) + 1)
-        k = int(min(max(1, k), k_max_effective))  # Clamp auf max
+        k = int(min(max(1, k), k_max_effective))
 
         m.pca_components_ = pca.components_[:k, :].copy()
-        m.n_components_ = k  # Speichere die tatsächliche Komponentenanzahl
+        m.n_components_ = k
         return m
 
     if method == "pls":
@@ -452,11 +291,11 @@ def fit_dr(
         Z = np.nan_to_num(Z, nan=0.0, posinf=0.0, neginf=0.0)
 
         n, p = Z.shape
-        c_eff = int(np.clip(pls_components, 1, max(1, min(p, n - 1))))  # min auf n-1 (oder p)
+        c_eff = int(np.clip(pls_components, 1, max(1, min(p, n - 1))))
 
         pls = PLSRegression(n_components=c_eff, scale=False)
         m.pls_model = pls
-        m.n_components_ = c_eff  # Speichere die tatsächliche Komponentenanzahl
+        m.n_components_ = c_eff
         return m
 
     m.method = "none"
@@ -471,14 +310,12 @@ def transform_dr(
         fit_pls: bool = False
 ) -> np.ndarray:
     if m.method == "none":
-        # Sicherstellen, dass die Spaltenauswahl auch bei 'none' greift
         Xc = X.loc[:, m.cols_] if m.cols_ else X
         return np.nan_to_num(Xc.to_numpy(dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
 
     if (m.scaler_mean is None or m.scaler_std is None):
         raise ValueError("DR map (PCA/PLS) ist nicht korrekt initialisiert (scaler fehlt).")
 
-    # Spaltenauswahl konsistent halten
     Xc = X.loc[:, m.cols_]
     Z = _apply_standardizer(Xc, m.scaler_mean, m.scaler_std)
     Z = np.nan_to_num(Z, nan=0.0, posinf=0.0, neginf=0.0)

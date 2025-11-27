@@ -18,10 +18,12 @@ class ForecastModel:
       - .get_feature_importances()
 
     Annahmen / Hinweise:
-      * Upstream sind Features train-only standardisiert (Z-Score), wie in ET/EN/LGBM.
-      * NaN/Inf werden als Sicherheitsnetz auf 0 gesetzt (wie ET/EN/LGBM).
-      * PCA wird auf dem Trainings-X gelernt (kein Leakage).
-      * sample_weight wirkt auf die Regression (WLS), nicht auf die PCA (wie bei FE/DR im Projekt üblich).
+      * Upstream liefert einen beliebig skalierten Feature-Space X^{final}.
+      * Dieses Modell nimmt intern eine train-only Z-Standardisierung vor
+        (Mittelwert/Std auf Train-X), BEVOR die PCA geschätzt wird.
+      * NaN/Inf werden als Sicherheitsnetz auf 0 gesetzt.
+      * PCA wird auf dem train-standardisierten X gelernt (kein Leakage).
+      * sample_weight wirkt auf die Regression (WLS), nicht auf die PCA.
 
     Hyperparameter (params):
       - n_factors      : int        Anzahl der PCA-Faktoren (k)
@@ -33,7 +35,8 @@ class ForecastModel:
       - (ignoriert werden z.B. n_features_to_use, corr_* etc. — kommen aus dem Tuning-Grid)
 
     Feature-Importances:
-      - Aus den impliziten Koeffizienten auf Feature-Ebene:
+      - Aus den impliziten Koeffizienten auf Feature-Ebene (auf Basis der
+        STANDARDISIERTEN Features):
         y_hat = (X_std @ components_.T) @ beta  => w = components_.T @ beta
         Importances = |w| pro Original-Feature.
     """
@@ -60,6 +63,10 @@ class ForecastModel:
         self._coef_factors: Optional[np.ndarray] = None   # beta auf Faktor-Ebene
         self._intercept_: Optional[float] = None
 
+        # Skalierungsparameter (train-only Z-Standardisierung)
+        self._mu_: Optional[np.ndarray] = None
+        self._sigma_: Optional[np.ndarray] = None
+
         # Regressor aufsetzen
         if self._reg_type == "ridge":
             self._reg = Ridge(alpha=self._ridge_alpha, fit_intercept=self._fit_intercept, random_state=self._seed)
@@ -83,6 +90,42 @@ class ForecastModel:
         X = np.asarray(X, dtype=float)
         return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
 
+    def _standardize_fit(self, X: np.ndarray) -> np.ndarray:
+        """
+        Fit Z-Standardisierung auf X (Train) und wende sie an.
+        Speichert mu und sigma für spätere Verwendung in predict.
+        """
+        X = self._clean(X)
+        mu = X.mean(axis=0)
+        sigma = X.std(axis=0, ddof=0)
+
+        # Schutz vor Division durch 0: sigma == 0 -> 1
+        sigma_safe = sigma.copy()
+        sigma_safe[sigma_safe == 0.0] = 1.0
+
+        self._mu_ = mu
+        self._sigma_ = sigma_safe
+
+        X_std = (X - mu) / sigma_safe
+        return X_std
+
+    def _standardize_apply(self, X: np.ndarray) -> np.ndarray:
+        """
+        Wende gespeicherte Z-Standardisierung auf neue Daten an.
+        """
+        if self._mu_ is None or self._sigma_ is None:
+            raise RuntimeError("Scaler parameters not fitted. Call fit() first.")
+        X = self._clean(X)
+
+        if X.shape[1] != self._mu_.shape[0]:
+            raise ValueError(
+                f"Number of features in X ({X.shape[1]}) does not match "
+                f"fitted scaler ({self._mu_.shape[0]})."
+            )
+
+        X_std = (X - self._mu_) / self._sigma_
+        return X_std
+
     def fit(self, X, y, sample_weight: Optional[np.ndarray] = None):
         # Feature-Namen speichern
         if isinstance(X, pd.DataFrame):
@@ -95,7 +138,6 @@ class ForecastModel:
             X_np = np.asarray(X)
             self._feature_names = [f"feature_{i}" for i in range(X_np.shape[1])]
 
-        X_np = self._clean(X_np)
         y_np = np.asarray(y, dtype=float).ravel()
 
         # n_factors an Daten begrenzen (robust)
@@ -111,8 +153,11 @@ class ForecastModel:
                 random_state=self._seed,
             )
 
-        # PCA auf Train-X
-        F_tr = self._pca.fit_transform(X_np)  # (n, k)
+        # --- Z-Standardisierung auf Train-X fitten und anwenden ---
+        X_std = self._standardize_fit(X_np)
+
+        # PCA auf standardisiertem Train-X
+        F_tr = self._pca.fit_transform(X_std)  # (n, k)
 
         # Regression auf Faktoren (WLS, falls sample_weight)
         sw = None
@@ -149,13 +194,15 @@ class ForecastModel:
     def predict(self, X):
         if self._pca is None or self._reg is None:
             raise RuntimeError("Model not fitted.")
+
         if isinstance(X, pd.DataFrame):
             X_np = X.values
         else:
             X_np = np.asarray(X)
-        X_np = self._clean(X_np)
 
-        F = self._pca.transform(X_np)
+        # dieselbe Standardisierung wie im Training anwenden
+        X_std = self._standardize_apply(X_np)
+        F = self._pca.transform(X_std)
         return self._reg.predict(F)
 
     def predict_one(self, x_row):
@@ -170,7 +217,7 @@ class ForecastModel:
 
     # Optional: nützlich für Diagnose
     def get_coef_features(self) -> Optional[np.ndarray]:
-        """Implizite Koeffizienten auf Feature-Ebene (w)."""
+        """Implizite Koeffizienten auf Feature-Ebene (w, bzgl. standardisiertem X)."""
         return None if self._coef_features is None else self._coef_features.copy()
 
     def get_coef_factors(self) -> Optional[np.ndarray]:

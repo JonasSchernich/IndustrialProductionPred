@@ -1,534 +1,514 @@
-# src/models/ensemble.py
+# src/ensemble.py
 from __future__ import annotations
 
+"""
+Ensemble utilities for combining Level-0 nowcasts from heterogeneous models.
+
+This module is fully leakage-safe: all weights are estimated using *out-of-sample*
+prequential predictions from the base models only, and only using information
+that would have been available at the time.
+
+We implement three combination schemes, matching the thesis text:
+
+1. Equal-weight (and trimmed) means.
+2. Static stacked regression with convex weights and ridge shrinkage
+   toward equal weights.
+3. Online Exponentially Weighted Averaging (EWA / Hedge) with optional
+   exponential discounting of past losses.
+
+All routines operate on pre-computed OOS predictions stored in
+`outputs/stageB/<model_name>/monthly/preds.csv` and do *not* refit the
+base models.
+"""
+
 from dataclasses import dataclass
-from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import Sequence, List, Dict, Tuple
 
 import numpy as np
 import pandas as pd
+
 from scipy.optimize import minimize
-from scipy.stats import trim_mean
 
-# Repo-abhängige Imports (Fallbacks erlauben Standalone-Betrieb)
-try:
-    from ..config import OUTPUTS  # type: ignore
-    from ..evaluation import rmse  # type: ignore
-except Exception:
-    OUTPUTS = Path("outputs")
-
-    def rmse(y_true, y_pred) -> float:
-        y_true = np.asarray(y_true)
-        y_pred = np.asarray(y_pred)
-        return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+from .config import outputs_for_model
+from .evaluation import rmse
 
 
-# ---------------------------------------------------------------------
-# Dataklassen & Utilities
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# I/O: Load Level-0 OOS predictions
+# ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class EnsembleConfig:
-    """Konfiguration für Ensemble-Training/Anwendung."""
-    stageA_dir: Path = OUTPUTS / "stageA"
-    stageB_dir: Path = OUTPUTS / "stageB"
-    save_dir: Path = OUTPUTS / "stageB" / "ensemble"   # wohin Stage-B-Ensemble-Outputs geschrieben werden
-    ensure_dirs: bool = True
+@dataclass
+class Level0Pool:
+    """Container for aligned Level-0 OOS predictions.
 
-
-def _ensure_dir(p: Path) -> None:
-    p.mkdir(parents=True, exist_ok=True)
-
-
-def _safe_inner_join_on_index(dfs: List[pd.DataFrame]) -> pd.DataFrame:
-    """Inner-join über Index. Leere Ergebnis-Mengen früh erkennen."""
-    if not dfs:
-        raise ValueError("Leere DF-Liste zum Join erhalten.")
-    out = dfs[0].copy()
-    for df in dfs[1:]:
-        out = out.join(df, how="inner")
-    if out.empty:
-        raise ValueError("Inner-Join ergab leeren Schnitt. Prüfe Zeitachsen und Modell-Läufe.")
-    return out
-
-
-# ---------------------------------------------------------------------
-# Laden der Level-1 Daten (Stage A / Stage B) – neue Speicherlogik
-# ---------------------------------------------------------------------
-
-def _read_stageB_preds_for_model(
-    model_tag: str,           # z.B. "lgbm_setup_II"
-    stageB_base: Path,
-    *,
-    date_col: str = "date_t_plus_1",
-    pred_col: str = "y_pred",
-    use_only_is_active: bool = True,
-) -> pd.DataFrame:
+    Attributes
+    ----------
+    dates : pd.DatetimeIndex
+        OOS dates (t+1 in thesis notation).
+    y_true : pd.Series
+        Realized targets y_{t+1} aligned with `dates`.
+    F : pd.DataFrame
+        Matrix of base-model forecasts with shape (T_oos, M),
+        columns labelled by `model_names`.
+    model_names : List[str]
+        Names of the base models.
     """
-    Erwartet: outputs/stageB/<model_tag>/monthly/preds.csv
-    Nimmt (optional) nur is_active=True Zeilen.
-    Gibt DF mit Index=date_col, Spalte=f"y_pred_{model_tag}" zurück.
+    dates: pd.DatetimeIndex
+    y_true: pd.Series
+    F: pd.DataFrame
+    model_names: List[str]
+
+
+def _load_active_stageB_predictions(model_name: str) -> pd.DataFrame:
     """
-    f = stageB_base / model_tag / "monthly" / "preds.csv"
-    if not f.exists():
-        raise FileNotFoundError(f"Stage-B preds nicht gefunden: {f}")
-    df = pd.read_csv(f, parse_dates=[date_col])
-    if use_only_is_active and "is_active" in df.columns:
-        df = df[df["is_active"] == True].copy()  # noqa: E712
-    if pred_col not in df.columns:
-        raise KeyError(f"Spalte '{pred_col}' fehlt in {f}")
-    cur = (
-        df[[date_col, pred_col]]
-        .rename(columns={pred_col: f"y_pred_{model_tag}"})
-        .set_index(date_col)
-        .sort_index()
-    )
-    return cur
+    Load OOS predictions from Stage B for a given model, keeping only the
+    *active* configuration chosen by the internal online policy.
 
-
-def _read_stageA_preds_for_model(
-    model_tag: str,           # z.B. "lgbm_setup_II"
-    stageA_base: Path,
-    *,
-    date_col: str = "date_t_plus_1",
-    pred_col: str = "y_pred",
-) -> pd.DataFrame:
+    Returns a dataframe indexed by date_t_plus_1 with columns:
+        - y_true
+        - <model_name> (nowcast)
     """
-    Erwartet: outputs/stageA/<model_tag>/block*/preds.csv
-    Liest ALLE Blöcke und konkateniert deren OOS-Preds.
-    Gibt DF mit Index=date_col, Spalte=f"y_pred_{model_tag}" zurück.
+    outs = outputs_for_model(model_name)
+    preds_path = outs["stageB"] / "monthly" / "preds.csv"
+    if not preds_path.exists():
+        raise FileNotFoundError(f"Stage B preds not found for model '{model_name}': {preds_path}")
+
+    df = pd.read_csv(preds_path)
+    if "date_t_plus_1" not in df.columns:
+        raise ValueError(f"'date_t_plus_1' column missing in {preds_path}")
+
+    # Keep only active configuration per month
+    if "is_active" in df.columns:
+        df = df[df["is_active"] == True].copy()
+
+    # Parse date and set index
+    df["date_t_plus_1"] = pd.to_datetime(df["date_t_plus_1"])
+    df = df.sort_values("date_t_plus_1")
+    df = df.set_index("date_t_plus_1")
+
+    # Basic sanity check
+    if df.index.duplicated().any():
+        # In case of duplicates, keep the last prediction per date
+        df = df[~df.index.duplicated(keep="last")]
+
+    return df[["y_true", "y_pred"]].rename(columns={"y_pred": model_name})
+
+
+def load_level0_pool(model_names: Sequence[str]) -> Level0Pool:
     """
-    model_dir = stageA_base / model_tag
-    if not model_dir.exists():
-        raise FileNotFoundError(f"Stage-A Modellverzeichnis fehlt: {model_dir}")
+    Load and align Level-0 OOS predictions for a list of models.
 
-    block_dirs = sorted(
-        [p for p in model_dir.iterdir() if p.is_dir() and p.name.lower().startswith("block")]
-    )
-    if not block_dirs:
-        raise FileNotFoundError(f"Keine block*-Ordner unter {model_dir} gefunden.")
+    Parameters
+    ----------
+    model_names : sequence of str
+        Model names as used in the Stage B runs (e.g. 'elastic_net', 'lightgbm', ...).
 
-    frames: List[pd.DataFrame] = []
-    for bdir in block_dirs:
-        f = bdir / "preds.csv"
-        if not f.exists():
-            continue
-        df = pd.read_csv(f, parse_dates=[date_col])
-        if pred_col not in df.columns:
-            raise KeyError(f"Spalte '{pred_col}' fehlt in {f}")
-        cur = (
-            df[[date_col, pred_col]]
-            .rename(columns={pred_col: f"y_pred_{model_tag}"})
-            .set_index(date_col)
-            .sort_index()
-        )
-        frames.append(cur)
-
-    if not frames:
-        raise FileNotFoundError(
-            f"Keine Stage-A preds.csv in Blöcken gefunden für {model_tag} unter {model_dir}"
-        )
-
-    out = pd.concat(frames, axis=0).sort_index()
-    # doppelte Indizes vermeiden (erste Beobachtung behalten)
-    out = out[~out.index.duplicated(keep="first")]
-    return out
-
-
-def load_level1_data(
-    model_tags: List[str],            # z.B. ["elastic_net_setup_I", "svr_setup_I", ...]
-    base_dir: Path,                   # i.d.R. OUTPUTS
-    y_true_series: pd.Series,
-    *,
-    stage: str,                       # "A" oder "B"
-    use_only_is_active_B: bool = True,
-    date_col: str = "date_t_plus_1",
-    pred_col: str = "y_pred",
-) -> pd.DataFrame:
+    Returns
+    -------
+    Level0Pool
+        Aligned target and forecast matrix across all base models.
     """
-    NEUE Speicherlogik:
+    model_names = list(model_names)
+    if len(model_names) == 0:
+        raise ValueError("At least one model_name is required.")
 
-        Stage B:
-            outputs/stageB/<model_tag>/monthly/preds.csv
+    dfs: Dict[str, pd.DataFrame] = {}
+    for name in model_names:
+        df = _load_active_stageB_predictions(name)
+        dfs[name] = df
 
-        Stage A:
-            outputs/stageA/<model_tag>/block*/preds.csv
+    # Align on common dates
+    common_idx = None
+    for df in dfs.values():
+        common_idx = df.index if common_idx is None else common_idx.intersection(df.index)
 
-    Rückgabe-DF:
-        Index  : DatetimeIndex (Schnittmenge über alle Modelle + y_true)
-        Spalten: 'y_true', 'y_pred_<model_tag_1>', 'y_pred_<model_tag_2>', ...
+    if common_idx is None or len(common_idx) == 0:
+        raise ValueError("No common dates across base models.")
+
+    common_idx = common_idx.sort_values()
+
+    # Build y_true (sanity check equality across models)
+    y_true = None
+    for name, df in dfs.items():
+        y_part = df.loc[common_idx, "y_true"]
+        if y_true is None:
+            y_true = y_part.copy()
+        else:
+            if not np.allclose(y_true.values, y_part.values, atol=1e-8, equal_nan=True):
+                raise ValueError(f"y_true mismatch between models; check outputs for '{name}'.")
+
+    assert y_true is not None
+    y_true.name = "y_true"
+
+    # Build forecast matrix
+    F = pd.DataFrame(index=common_idx)
+    for name, df in dfs.items():
+        F[name] = df.loc[common_idx, name].astype(float)
+
+    return Level0Pool(dates=common_idx, y_true=y_true, F=F, model_names=model_names)
+
+
+# ---------------------------------------------------------------------------
+# Equal-weight and trimmed means
+# ---------------------------------------------------------------------------
+
+def equal_weight_ensemble(F: pd.DataFrame) -> pd.Series:
     """
-    base = y_true_series.rename("y_true").to_frame()
-    pieces: List[pd.DataFrame] = []
-    missing: List[str] = []
+    Cross-sectional equal-weight average of forecasts.
 
-    stage = stage.upper().strip()
-    if stage not in {"A", "B"}:
-        raise ValueError("Argument 'stage' muss 'A' oder 'B' sein.")
+    Parameters
+    ----------
+    F : DataFrame (T x M)
+        Rows = dates, columns = base models.
 
-    stageA_base = base_dir / "stageA"
-    stageB_base = base_dir / "stageB"
-
-    for tag in model_tags:
-        try:
-            if stage == "B":
-                cur = _read_stageB_preds_for_model(
-                    tag,
-                    stageB_base,
-                    date_col=date_col,
-                    pred_col=pred_col,
-                    use_only_is_active=use_only_is_active_B,
-                )
-            else:
-                cur = _read_stageA_preds_for_model(
-                    tag,
-                    stageA_base,
-                    date_col=date_col,
-                    pred_col=pred_col,
-                )
-            pieces.append(cur)
-        except FileNotFoundError:
-            missing.append(tag)
-
-    if missing:
-        print(f"[Ensemble] Warnung: Für {len(missing)} Modelle keine preds gefunden: {missing}")
-    if not pieces:
-        raise FileNotFoundError("Keine preds.csv-Dateien für die angegebenen Modelle gefunden.")
-
-    out = _safe_inner_join_on_index([base] + pieces)
-    return out
-
-
-def get_pred_cols(df_l1: pd.DataFrame) -> List[str]:
-    return [c for c in df_l1.columns if c.startswith("y_pred_")]
-
-
-# ---------------------------------------------------------------------
-# Ensemble-Strategien
-# ---------------------------------------------------------------------
-
-def apply_equal_weight(df_l1: pd.DataFrame, pred_cols: List[str]) -> pd.Series:
-    """Equal-weight Durchschnitt (keine Parameter, leakage-sicher)."""
-    return df_l1[pred_cols].mean(axis=1)
-
-
-def apply_trimmed_mean(
-    df_l1: pd.DataFrame,
-    pred_cols: List[str],
-    *,
-    use_median: bool = False,
-    trim_each_side: float = 0.0,
-) -> pd.Series:
+    Returns
+    -------
+    pd.Series
+        Ensemble prediction per date.
     """
-    Symmetrisch getrimmtes Mittel oder Median.
+    return F.mean(axis=1)
 
-    Parameter:
-    - use_median: True => exakt der Median (robusteste Variante).
-    - trim_each_side ∈ [0, 0.5): Anteil je Seite, der abgeschnitten wird (z.B. 0.1 => 10% pro Seite).
-      Intern nutzt scipy.stats.trim_mean(proportiontocut=trim_each_side).
 
-    Hinweise:
-    - 'trim_each_side = 0.0' entspricht einfachem Mittel (wenn use_median=False).
-    - Median kann NICHT mit trim_mean exakt dargestellt werden; deshalb Sonderfall.
+def trimmed_mean_ensemble(F: pd.DataFrame, alpha: float) -> pd.Series:
     """
-    if use_median:
-        return df_l1[pred_cols].median(axis=1)
+    Symmetric alpha-trimmed mean over base-model forecasts.
 
-    if not (0.0 <= trim_each_side < 0.5):
-        raise ValueError("trim_each_side muss in [0.0, 0.5) liegen.")
+    Parameters
+    ----------
+    F : DataFrame (T x M)
+        Rows = dates, columns = base models.
+    alpha : float
+        Fraction in (0, 0.5). A value of 0.1 drops the lowest 10% and highest
+        10% of forecasts (rounded down) before averaging.
 
-    return df_l1[pred_cols].apply(
-        lambda row: trim_mean(row.values, proportiontocut=trim_each_side),
-        axis=1,
-    )
-
-
-def compute_bates_granger_weights(
-    df_l1: pd.DataFrame,
-    pred_cols: List[str],
-    *,
-    window: int,
-    w_min: float = 0.0,
-    w_max: float = 0.6,
-    eps: float = 1e-9,
-) -> pd.DataFrame:
+    Returns
+    -------
+    pd.Series
+        Ensemble prediction per date.
     """
-    Berechne rollierende inverse-MSFE-Gewichte (Bates-Granger), ohne Leakage:
-    - Rolling MSFE über Vergangenheits-Fehler (MSE der einzelnen Modelle)
-    - inverse Gewichte, mit Cap/Floor pro Zeitpunkt
-    - Normalisierung pro Zeitpunkt
-    - Ergebnis: Gewichte, die zu ZEIT t auf Prognose t+1 angewandt werden müssen -> daher noch .shift(1)!
+    if not (0.0 <= alpha < 0.5):
+        raise ValueError("alpha must be in [0, 0.5).")
 
-    Rückgabe: DataFrame 'weights' (gleicher Index wie df_l1), Spalten = pred_cols (unge-shiftet).
+    M = F.shape[1]
+    k = int(np.floor(alpha * M))
+    if k == 0:
+        # No trimming → equal-weight
+        return equal_weight_ensemble(F)
+
+    def _trimmed_row(x: np.ndarray) -> float:
+        xs = np.sort(x.astype(float))
+        if 2 * k >= len(xs):
+            # degenerate case: fall back to median
+            return float(np.median(xs))
+        return float(xs[k:-k].mean())
+
+    vals = np.apply_along_axis(_trimmed_row, 1, F.values)
+    return pd.Series(vals, index=F.index, name="trimmed_mean")
+
+
+def median_ensemble(F: pd.DataFrame) -> pd.Series:
     """
-    # Squared errors (pro Modell vs. y_true)
-    se = df_l1[pred_cols].subtract(df_l1["y_true"], axis=0).pow(2)
-
-    # Rolling MSFE (stabiler Start)
-    msfe = se.rolling(window=window, min_periods=max(2, window // 2)).mean()
-
-    inv = 1.0 / (msfe + eps)
-    w = inv.div(inv.sum(axis=1), axis=0)
-
-    # Cap/Floor -> erneut normalisieren (robust gegen Zeilen mit Summe=0)
-    w = w.clip(lower=w_min, upper=w_max)
-    denom = w.sum(axis=1).replace(0, np.nan)
-    # divide row-wise by denom (axis=0 aligns on index)
-    w = w.div(denom, axis=0)
-    # Falls Zeilen NaNs haben (z.B. denom=0): auf Equal Weights zurückfallen
-    if w.isna().any().any():
-        w = w.apply(
-            lambda row: row.fillna(1.0 / len(pred_cols)),
-            axis=1,
-        )
-    return w
-
-
-def apply_bates_granger(
-    df_l1: pd.DataFrame,
-    pred_cols: List[str],
-    *,
-    window: int,
-    w_min: float = 0.0,
-    w_max: float = 0.6,
-) -> pd.Series:
+    Cross-sectional median of base-model forecasts.
     """
-    Bates-Granger-Ensemble-Vorhersagen (inverse MSFE, leakage-sicher).
+    return F.median(axis=1)
+
+
+# ---------------------------------------------------------------------------
+# Stacked regression (static meta-learner)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class StackingResult:
+    weights: pd.Series       # convex weights over base models
+    lambda_opt: float        # selected ridge penalty
+    rmse_cal: float          # RMSE on calibration period
+    y_pred: pd.Series        # stacked predictions over *all* dates
+
+
+def fit_stacking_ensemble(
+    y: pd.Series,
+    F: pd.DataFrame,
+    cal_dates: Sequence[pd.Timestamp],
+    lambdas: Sequence[float],
+) -> StackingResult:
     """
-    M = len(pred_cols)
-    w = compute_bates_granger_weights(
-        df_l1,
-        pred_cols,
-        window=window,
-        w_min=w_min,
-        w_max=w_max,
-    )
-    w_shift = w.shift(1).fillna(1.0 / M)
-    yhat = (df_l1[pred_cols] * w_shift).sum(axis=1)
-    yhat.name = "ENS_BG"
-    return yhat
+    Fit convex stacked regression with ridge shrinkage toward equal weights.
 
+    The problem is
+        min_w  sum_{tau in cal} (y_tau - F_tau w)^2
+              + lambda ||w - 1/M||_2^2
+        s.t.   w_i >= 0, sum_i w_i = 1.
 
-def _rolling_mad_scale(y: np.ndarray, window: int) -> np.ndarray:
+    Parameters
+    ----------
+    y : pd.Series
+        Realized targets, indexed by date.
+    F : pd.DataFrame
+        Base-model forecasts, index aligned with `y`.
+    cal_dates : sequence of T_cal dates
+        Calibration dates (subset of F.index) used to estimate weights.
+    lambdas : sequence of float
+        Candidate ridge penalties.
+
+    Returns
+    -------
+    StackingResult
     """
-    Leakage-freie, robuste Skala via rollierender MAD (1.4826 * median|x - median(x)|),
-    nur Vergangenheit (ffill), untere Schwelle.
-    """
-    s = pd.Series(y)
-    mad = s.rolling(window=window, min_periods=1).apply(
-        lambda x: 1.4826 * np.median(np.abs(x - np.median(x))),
-        raw=False,
-    )
-    mad = mad.replace(0, np.nan).ffill()
-    if pd.isna(mad.iloc[0]):
-        mad.iloc[0] = 1.0
-    mad = mad.ffill().clip(lower=1e-6)
-    return mad.to_numpy()
+    if len(F.columns) == 0:
+        raise ValueError("F must have at least one column.")
+    if len(cal_dates) == 0:
+        raise ValueError("cal_dates must be non-empty.")
+
+    lambdas = list(lambdas)
+    if len(lambdas) == 0:
+        raise ValueError("At least one lambda must be provided.")
+
+    # Restrict to calibration period
+    cal_idx = pd.Index(cal_dates)
+    cal_idx = cal_idx.intersection(F.index).sort_values()
+    if len(cal_idx) == 0:
+        raise ValueError("No overlap between cal_dates and forecast index.")
+
+    y_cal = y.loc[cal_idx].astype(float).values
+    F_cal = F.loc[cal_idx].astype(float).values
+
+    T_cal, M = F_cal.shape
+    w_equal = np.full(M, 1.0 / M, dtype=float)
+
+    if T_cal < M:
+        # Underdetermined: fall back to equal weights
+        w_best = w_equal
+        lambda_best = float(lambdas[0])
+        rmse_best = rmse(y_cal, F_cal @ w_best)
+    else:
+        bounds = [(0.0, None)] * M
+        cons = [
+            {"type": "eq", "fun": lambda w: np.sum(w) - 1.0}
+        ]
+
+        def make_obj(lam: float):
+            def _obj(w: np.ndarray) -> float:
+                w = np.asarray(w, dtype=float)
+                resid = y_cal - F_cal @ w
+                reg = lam * float(np.sum((w - w_equal) ** 2))
+                return float(np.dot(resid, resid) + reg)
+            return _obj
+
+        w0 = w_equal.copy()
+        lambda_best = None
+        w_best = None
+        rmse_best = np.inf
+
+        for lam in lambdas:
+            obj = make_obj(float(lam))
+            try:
+                res = minimize(obj, w0, method="SLSQP", bounds=bounds, constraints=cons)
+                if not res.success:
+                    continue
+                w_hat = np.asarray(res.x, dtype=float)
+                # numerical clean-up
+                w_hat[w_hat < 0] = 0.0
+                s = float(w_hat.sum())
+                if s <= 0:
+                    w_hat = w_equal.copy()
+                else:
+                    w_hat /= s
+            except Exception:
+                # fall back to equal weights if optimizer fails
+                w_hat = w_equal.copy()
+
+            y_cal_hat = F_cal @ w_hat
+            rmse_lam = rmse(y_cal, y_cal_hat)
+            if rmse_lam < rmse_best:
+                rmse_best = rmse_lam
+                lambda_best = float(lam)
+                w_best = w_hat.copy()
+
+        if w_best is None:
+            w_best = w_equal
+            lambda_best = float(lambdas[0])
+            rmse_best = rmse(y_cal, F_cal @ w_best)
+
+    # Apply static weights to full sample
+    F_all = F.astype(float).values
+    y_hat_all = F_all @ w_best
+    y_hat_all = pd.Series(y_hat_all, index=F.index, name="stacked")
+
+    weights = pd.Series(w_best, index=F.columns, name="stack_weights")
+
+    return StackingResult(weights=weights, lambda_opt=lambda_best, rmse_cal=rmse_best, y_pred=y_hat_all)
 
 
-def compute_ewa_ensemble(
-    df_l1: pd.DataFrame,
-    pred_cols: List[str],
-    *,
+# ---------------------------------------------------------------------------
+# Exponentially Weighted Averaging (EWA / Hedge)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class EWAResult:
+    eta_opt: float                # selected learning rate
+    delta: float                  # forgetting factor
+    rmse_cal: float               # RMSE on calibration period
+    y_pred: pd.Series             # EWA predictions over all dates
+    weights_history: pd.DataFrame # per-date weights over base models
+
+
+def _run_ewa_single(
+    y: pd.Series,
+    F: pd.DataFrame,
     eta: float,
     delta: float = 1.0,
-    scale_window: int = 24,
 ) -> Tuple[pd.Series, pd.DataFrame]:
     """
-    EWA/Hedge: sequentielle Gewichte aus skaliertem, ggf. vergessendem Verlust.
+    Run EWA/Hedge on a given series y and forecast matrix F.
 
-    Rückgabe:
-      - y_hat_ens (Series)    : Ensemble-Prognose (leakage-sicher)
-      - weights_hist (DataFrame): Gewichte je t (die auf Prognose t angewandt wurden)
+    Parameters
+    ----------
+    y : pd.Series
+        Realized targets, indexed by date.
+    F : pd.DataFrame
+        Base-model forecasts (aligned with y).
+    eta : float
+        Learning rate > 0.
+    delta : float, optional
+        Forgetting factor in (0, 1]; delta=1.0 corresponds to no discounting.
+
+    Returns
+    -------
+    (y_hat, W)
+        y_hat : pd.Series of ensemble predictions per date.
+        W     : pd.DataFrame of weights per date (rows=dates, cols=base models).
     """
-    preds = df_l1[pred_cols].to_numpy()
-    y = df_l1["y_true"].to_numpy()
-    T, M = preds.shape
+    if eta <= 0:
+        raise ValueError("eta must be > 0.")
+    if not (0.0 < delta <= 1.0):
+        raise ValueError("delta must be in (0, 1].")
 
-    # Start
-    weights = np.ones(M) / M
-    weights_hist = np.zeros((T, M))
-    y_hat = np.zeros(T)
+    dates = F.index.intersection(y.index)
+    dates = dates.sort_values()
+    F = F.loc[dates].astype(float)
+    y = y.loc[dates].astype(float)
 
-    # leakage-freie Skala: Skala von t-1 verwenden
-    scale_raw = _rolling_mad_scale(y, scale_window)
-    scale_shift = pd.Series(scale_raw).shift(1).ffill().fillna(1.0).to_numpy()
+    M = F.shape[1]
+    L = np.zeros(M, dtype=float)  # cumulative (discounted) losses
 
-    cum_loss = np.zeros(M)
-    for t in range(T):
-        # Prognose mit Gewichten von t (die aus Verl. bis t-1 stammen)
-        y_hat[t] = float(np.dot(weights, preds[t, :]))
-        weights_hist[t, :] = weights
+    # Running variance for scale s_t^2 (Welford)
+    n = 0
+    mean = 0.0
+    m2 = 0.0
 
-        # Beobachtete Verluste zum Update für t+1
-        losses_raw = (y[t] - preds[t, :]) ** 2
-        s = scale_shift[t]
-        losses_scaled = np.clip(losses_raw / (s**2 + 1e-9), 0.0, 1.0)
-        cum_loss = delta * cum_loss + losses_scaled
+    weights_list: List[pd.Series] = []
+    yhat_list: List[float] = []
 
-        # Update (stabilisiert)
-        logw = -eta * cum_loss
-        logw -= logw.min()
-        w_unnorm = np.exp(logw)
-        weights = w_unnorm / (w_unnorm.sum() + 1e-12)
+    for date in dates:
+        # 1) Compute weights based on past losses L
+        exponents = -eta * L
+        # numerical stabilisation
+        exponents -= np.max(exponents)
+        w = np.exp(exponents)
+        s = float(w.sum())
+        if s <= 0:
+            w[:] = 1.0 / M
+        else:
+            w /= s
 
-    wdf = pd.DataFrame(weights_hist, index=df_l1.index, columns=pred_cols)
-    yhat = pd.Series(y_hat, index=df_l1.index, name="ENS_EWA")
-    return yhat, wdf
+        w_series = pd.Series(w, index=F.columns, name=date)
+        weights_list.append(w_series)
+
+        # 2) Ensemble prediction
+        f_t = F.loc[date].values
+        y_hat_t = float(np.dot(w, f_t))
+        yhat_list.append(y_hat_t)
+
+        # 3) Observe outcome and update scale s_t^2 (only past and current y)
+        y_t = float(y.loc[date])
+        n += 1
+        if n == 1:
+            mean = y_t
+            m2 = 0.0
+            var = max((y_t - mean) ** 2, 1e-6)
+        else:
+            delta_y = y_t - mean
+            mean += delta_y / n
+            m2 += delta_y * (y_t - mean)
+            var = m2 / max(n - 1, 1.0)
+            var = max(var, 1e-6)
+
+        s2 = var
+
+        # 4) Per-expert loss
+        se = (y_t - f_t) ** 2
+        tilde_l = se / s2
+        ell = np.clip(tilde_l, 0.0, 1.0)
+
+        # 5) Discounted cumulative loss update
+        L = delta * L + ell
+
+    y_hat = pd.Series(yhat_list, index=dates, name="ewa")
+    W = pd.DataFrame(weights_list)
+    return y_hat, W
 
 
-def apply_ewa(
-    df_l1: pd.DataFrame,
-    pred_cols: List[str],
-    *,
-    eta: float,
-    delta: float = 1.0,
-    scale_window: int = 24,
-) -> pd.Series:
-    yhat, _ = compute_ewa_ensemble(
-        df_l1,
-        pred_cols,
-        eta=eta,
+def fit_ewa_ensemble(
+    y: pd.Series,
+    F: pd.DataFrame,
+    cal_dates: Sequence[pd.Timestamp],
+    etas: Sequence[float],
+    delta: float = 0.95,
+) -> EWAResult:
+    """
+    Fit EWA by selecting the learning rate eta on a calibration period.
+
+    Parameters
+    ----------
+    y : pd.Series
+        Realized targets, indexed by date.
+    F : pd.DataFrame
+        Base-model forecasts (aligned with y).
+    cal_dates : sequence of dates
+        Calibration dates used to tune eta.
+    etas : sequence of float
+        Candidate learning rates (> 0).
+    delta : float, optional
+        Forgetting factor in (0, 1]; default 0.95 as in the thesis.
+
+    Returns
+    -------
+    EWAResult
+    """
+    etas = list(etas)
+    if len(etas) == 0:
+        raise ValueError("At least one eta must be provided.")
+
+    cal_idx = pd.Index(cal_dates)
+    cal_idx = cal_idx.intersection(F.index).sort_values()
+    if len(cal_idx) == 0:
+        raise ValueError("No overlap between cal_dates and forecast index.")
+
+    y_cal = y.loc[cal_idx]
+    F_cal = F.loc[cal_idx]
+
+    eta_best = None
+    rmse_best = np.inf
+
+    for eta in etas:
+        y_hat_cal, _ = _run_ewa_single(y_cal, F_cal, eta=float(eta), delta=delta)
+        r = rmse(y_cal.values, y_hat_cal.values)
+        if r < rmse_best:
+            rmse_best = r
+            eta_best = float(eta)
+
+    if eta_best is None:
+        eta_best = float(etas[0])
+        y_hat_cal, _ = _run_ewa_single(y_cal, F_cal, eta=eta_best, delta=delta)
+        rmse_best = rmse(y_cal.values, y_hat_cal.values)
+
+    # Run once more on full sample with optimal eta
+    y_hat_all, W_all = _run_ewa_single(y, F, eta=eta_best, delta=delta)
+
+    return EWAResult(
+        eta_opt=eta_best,
         delta=delta,
-        scale_window=scale_window,
+        rmse_cal=rmse_best,
+        y_pred=y_hat_all,
+        weights_history=W_all,
     )
-    return yhat
-
-
-# ---------------------------------------------------------------------
-# Stacking (Stage-A fit, Stage-B frozen)
-# ---------------------------------------------------------------------
-
-def tune_stacking_weights(
-    df_tune: pd.DataFrame,
-    pred_cols: List[str],
-    *,
-    ridge_lambda: float = 0.1,
-    start_from_best: bool = True,
-) -> np.ndarray:
-    """
-    Convex, nonnegative Stacking-Gewichte (Summe=1) mit Ridge-Shrinkage zum EW-Prior.
-    Training nur auf Stage-A (echte OOS), Gewichte werden für Stage-B eingefroren.
-
-    Ziel:
-        min_w  mean((y - Xw)^2) + λ * ||w - (1/M)||^2
-        s.t.   w_i >= 0, sum_i w_i = 1
-
-    Rückgabe: np.ndarray (M,)
-    """
-    X = df_tune[pred_cols].to_numpy()
-    y = df_tune["y_true"].to_numpy()
-    M = X.shape[1]
-    prior = np.ones(M) / M
-
-    # Startpunkt
-    if start_from_best:
-        rmses = [rmse(y, X[:, i]) for i in range(M)]
-        w0 = np.zeros(M)
-        w0[int(np.argmin(rmses))] = 1.0
-    else:
-        w0 = prior.copy()
-
-    def objective(w: np.ndarray) -> float:
-        yhat = X @ w
-        loss = np.mean((y - yhat) ** 2)
-        penalty = ridge_lambda * np.sum((w - prior) ** 2)
-        return float(loss + penalty)
-
-    bounds = tuple((0.0, 1.0) for _ in range(M))
-    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
-
-    res = minimize(
-        objective,
-        w0,
-        method="SLSQP",
-        bounds=bounds,
-        constraints=constraints,
-        options={"maxiter": 1000, "ftol": 1e-12},
-    )
-
-    if not res.success:
-        print(f"[Ensemble] Warnung: Stacking-Optimierung nicht konvergiert: {res.message}. Fallback=EW.")
-        return prior
-
-    w = res.x
-    w = w / (w.sum() + 1e-12)
-    return w
-
-
-def apply_stacking(
-    df_eval: pd.DataFrame,
-    pred_cols: List[str],
-    weights: np.ndarray,
-) -> pd.Series:
-    """Anwendung eingefrorener Stacking-Gewichte (ohne Nachlernen)."""
-    yhat = df_eval[pred_cols].to_numpy() @ np.asarray(weights)
-    return pd.Series(yhat, index=df_eval.index, name="ENS_Stacking")
-
-
-# ---------------------------------------------------------------------
-# Speichern & Reporting
-# ---------------------------------------------------------------------
-
-def save_ensemble_predictions(
-    y_true: pd.Series,
-    ens_preds: Dict[str, pd.Series],
-    *,
-    save_dir: Path,
-    run_name: str,
-) -> None:
-    """
-    Speichert Ensemble-Serien im Format ähnlich der Basismodelle:
-    save_dir/<run_name>/monthly/preds__<ensemble_name>.csv
-    mit Spalten: date_t_plus_1, y_pred, is_active, ensemble_name
-    """
-    out_dir = Path(save_dir) / run_name / "monthly"
-    _ensure_dir(out_dir)
-
-    for name, s in ens_preds.items():
-        df = pd.DataFrame(
-            {
-                "date_t_plus_1": s.index,
-                "y_pred": s.values,
-                "is_active": True,
-                "ensemble_name": name,
-            }
-        )
-        df.to_csv(out_dir / f"preds__{name}.csv", index=False)
-
-    # Optional: ein kombiniertes File
-    comb = pd.DataFrame({"date_t_plus_1": y_true.index, "y_true": y_true.values})
-    for name, s in ens_preds.items():
-        comb = comb.merge(
-            s.rename(name).rename_axis("date_t_plus_1").reset_index(),
-            on="date_t_plus_1",
-            how="left",
-        )
-    comb.to_csv(out_dir / "preds__ALL.csv", index=False)
-
-
-def rmse_table(
-    y_true: pd.Series,
-    df_or_dict: Dict[str, pd.Series] | pd.DataFrame
-) -> pd.DataFrame:
-    """
-    Erzeugt eine RMSE-Tabelle aus einer Mapping-Struktur oder einem DataFrame.
-    """
-    if isinstance(df_or_dict, dict):
-        cols = {}
-        for k, s in df_or_dict.items():
-            cols[k] = float(rmse(y_true.reindex(s.index), s))
-        out = pd.Series(cols).sort_values().to_frame("RMSE")
-        out.index.name = "Model"
-        return out
-
-    # DataFrame
-    out = {}
-    for col in df_or_dict.columns:
-        if col == "y_true":
-            continue
-        out[col] = float(rmse(df_or_dict["y_true"], df_or_dict[col]))
-    out = pd.Series(out).sort_values().to_frame("RMSE")
-    out.index.name = "Model"
-    return out
-

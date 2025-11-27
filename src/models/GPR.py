@@ -16,27 +16,12 @@ class ForecastModel:
     - .predict_one(x_row)
     - .get_feature_importances()  (Pseudo-Importances via ARD-Längenskalen)
 
-    Thesis ↔ sklearn Hyperparameter-Notationen (Vorschlag):
-      - 'kernel'            ∈ {'rbf','matern'}
-      - 'ard'               -> ARD-Längenskalen (True/False)
-      - 'length_scale_init' -> initiale Längenskala (float)
-      - 'nu'                -> nur für Matern (z.B. 1.5, 2.5)
-      - 'noise_alpha'       -> Basisrauschen α (float) für homoskedastische Fälle
-      - 'normalize_y'       -> Normalisierung von y (bool)
-      - 'n_restarts_optimizer' -> Restarts der Kernel-Optimierung (int)
-      - 'optimizer'         -> 'fmin_l_bfgs_b' oder None
-      - 'seed'              -> random_state
-
-    Gewichtung:
-      - sample_weight (Vektor) wird in heteroskedastische alpha_i umgesetzt:
-        alpha_i = noise_alpha / clip(sample_weight_i, eps, 1.0)
-        -> kleine Gewichte ⇒ größere alpha_i ⇒ geringerer Einfluss.
-
-    Hinweise:
-      * Upstream (wie ET/EN/LGBM) sollten Features train-only standardisiert sein (Z-Score).
-      * NaN/Inf werden auf 0.0 gesetzt (Safety-Net, analog).
-      * Feature-"Importances": bei ARD-RBF/Matern: 1 / length_scale^2 (normalisiert).
-        Bei nicht-ARD: leeres Dict.
+    Wichtige Punkte:
+      * Dieses Modell führt intern eine train-only Z-Standardisierung von X durch
+        (Mittelwert/Std aus dem Trainingsset), BEVOR der GPR gefittet wird.
+      * NaN/Inf werden auf 0.0 gesetzt.
+      * Feature-"Importances": bei ARD-RBF/Matern: 1 / length_scale^2 (normalisiert)
+        bezogen auf den STANDARDISIERTEN Feature-Space.
     """
 
     def __init__(self, params: Optional[Dict[str, Any]] = None):
@@ -44,6 +29,7 @@ class ForecastModel:
         self._reg: Optional[GaussianProcessRegressor] = None
         self._backend_name: str = "gpr"
         self._feature_names: Optional[List[str]] = None
+
         self._ard: bool = bool(self.params.get("ard", True))
         self._kernel_type: str = str(self.params.get("kernel", "rbf")).lower()
         self._length_scale_init: float = float(self.params.get("length_scale_init", 1.0))
@@ -57,6 +43,10 @@ class ForecastModel:
         # Wird nach dem Fit gefüllt (falls ARD):
         self._last_length_scales_: Optional[np.ndarray] = None
 
+        # Skalierungsparameter (train-only Z-Standardisierung)
+        self._mu_: Optional[np.ndarray] = None
+        self._sigma_: Optional[np.ndarray] = None
+
     def get_name(self) -> str:
         return self._backend_name
 
@@ -64,6 +54,38 @@ class ForecastModel:
     def _clean(X: np.ndarray) -> np.ndarray:
         X = np.asarray(X, dtype=float)
         return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+
+    def _standardize_fit(self, X: np.ndarray) -> np.ndarray:
+        """
+        Fit Z-Standardisierung auf X (Train) und wende sie an.
+        """
+        X = self._clean(X)
+        mu = X.mean(axis=0)
+        sigma = X.std(axis=0, ddof=0)
+
+        sigma_safe = sigma.copy()
+        sigma_safe[sigma_safe == 0.0] = 1.0  # konstante Features
+
+        self._mu_ = mu
+        self._sigma_ = sigma_safe
+
+        return (X - mu) / sigma_safe
+
+    def _standardize_apply(self, X: np.ndarray) -> np.ndarray:
+        """
+        Wende gespeicherte Z-Standardisierung auf neue Daten an.
+        """
+        if self._mu_ is None or self._sigma_ is None:
+            raise RuntimeError("Scaler parameters not fitted. Call fit() first.")
+        X = self._clean(X)
+
+        if X.shape[1] != self._mu_.shape[0]:
+            raise ValueError(
+                f"Number of features in X ({X.shape[1]}) does not match "
+                f"fitted scaler ({self._mu_.shape[0]})."
+            )
+
+        return (X - self._mu_) / self._sigma_
 
     def _build_kernel(self, n_features: int):
         # ARD: length_scale ist Vektor der Länge p; sonst Skalar
@@ -106,9 +128,11 @@ class ForecastModel:
             X_np = np.asarray(X)
             self._feature_names = [f"feature_{i}" for i in range(X_np.shape[1])]
 
-        X_np = self._clean(X_np)
         y_np = np.asarray(y, dtype=float).ravel()
         n, p = X_np.shape
+
+        # Train-only Z-Standardisierung
+        X_std = self._standardize_fit(X_np)
 
         # Heteroskedastische alpha via sample_weight
         alpha_vec = None
@@ -121,7 +145,7 @@ class ForecastModel:
 
         # Reg mit passendem alpha erzeugen und fitten
         self._reg = self._make_reg(p, alpha_vec=alpha_vec)
-        self._reg.fit(X_np, y_np)
+        self._reg.fit(X_std, y_np)
 
         # Längenskalen (für ARD) extrahieren -> Pseudo-Importances
         self._last_length_scales_ = self._extract_length_scales(self._reg)
@@ -151,8 +175,9 @@ class ForecastModel:
             X_np = X.values
         else:
             X_np = np.asarray(X)
-        X_np = self._clean(X_np)
-        return self._reg.predict(X_np)
+
+        X_std = self._standardize_apply(X_np)
+        return self._reg.predict(X_std)
 
     def predict_one(self, x_row):
         x = np.asarray(x_row).reshape(1, -1)

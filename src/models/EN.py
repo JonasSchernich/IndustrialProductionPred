@@ -13,12 +13,15 @@ class ForecastModel:
     - .predict(X)
     - .predict_one(x_row)
     - .get_feature_importances()
+
     Hyperparameter (Thesis-Notation -> sklearn):
       - 'alpha'   (Mixing)  -> l1_ratio   in sklearn
       - 'lambda'  (Penalty) -> alpha      in sklearn
       - 'seed'    -> random_state
+
     Hinweise:
-      * Upstream sollten Features train-only standardisiert sein (Z-Score).
+      * Dieses Modell führt intern eine train-only Z-Standardisierung von X durch
+        (Mittelwert/Std auf dem Trainingsset), BEVOR ElasticNet gefittet wird.
       * NaN/Inf werden als Safety-Net auf 0 gesetzt (analog ET).
     """
 
@@ -28,6 +31,10 @@ class ForecastModel:
         self._backend_name: str = "elastic_net"
         self._feature_names: Optional[List[str]] = None
         self._importances: Optional[np.ndarray] = None
+
+        # Skalierungsparameter (train-only Z-Standardisierung)
+        self._mu_: Optional[np.ndarray] = None
+        self._sigma_: Optional[np.ndarray] = None
 
         # --- Mapping Thesis -> sklearn ---
         # Thesis 'alpha'   (Mixing)  -> sklearn 'l1_ratio'
@@ -61,6 +68,39 @@ class ForecastModel:
         X = np.asarray(X, dtype=float)
         return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
 
+    def _standardize_fit(self, X: np.ndarray) -> np.ndarray:
+        """
+        Fit Z-Standardisierung auf X (Train) und wende sie an.
+        Speichert mu und sigma für spätere Verwendung in predict.
+        """
+        X = self._clean(X)
+        mu = X.mean(axis=0)
+        sigma = X.std(axis=0, ddof=0)
+
+        sigma_safe = sigma.copy()
+        sigma_safe[sigma_safe == 0.0] = 1.0  # konstante Features -> keine Skalierung
+
+        self._mu_ = mu
+        self._sigma_ = sigma_safe
+
+        return (X - mu) / sigma_safe
+
+    def _standardize_apply(self, X: np.ndarray) -> np.ndarray:
+        """
+        Wende gespeicherte Z-Standardisierung auf neue Daten an.
+        """
+        if self._mu_ is None or self._sigma_ is None:
+            raise RuntimeError("Scaler parameters not fitted. Call fit() first.")
+        X = self._clean(X)
+
+        if X.shape[1] != self._mu_.shape[0]:
+            raise ValueError(
+                f"Number of features in X ({X.shape[1]}) does not match "
+                f"fitted scaler ({self._mu_.shape[0]})."
+            )
+
+        return (X - self._mu_) / self._sigma_
+
     def fit(self, X, y, sample_weight: Optional[np.ndarray] = None):
         # Feature-Namen erfassen (analog ET)
         if isinstance(X, pd.DataFrame):
@@ -73,16 +113,18 @@ class ForecastModel:
             X_np = np.asarray(X)
             self._feature_names = [f"feature_{i}" for i in range(X_np.shape[1])]
 
-        X_np = self._clean(X_np)
         y_np = np.asarray(y, dtype=float).ravel()
+
+        # Train-only Z-Standardisierung
+        X_std = self._standardize_fit(X_np)
 
         if sample_weight is not None:
             sample_weight = np.asarray(sample_weight, dtype=float).ravel()
-            self._reg.fit(X_np, y_np, sample_weight=sample_weight)
+            self._reg.fit(X_std, y_np, sample_weight=sample_weight)
         else:
-            self._reg.fit(X_np, y_np)
+            self._reg.fit(X_std, y_np)
 
-        # Importances = |coefficients|
+        # Importances = |coefficients| (auf standardisiertem Feature-Space)
         self._importances = np.abs(self._reg.coef_)
         return self
 
@@ -93,8 +135,9 @@ class ForecastModel:
             X_np = X.values
         else:
             X_np = np.asarray(X)
-        X_np = self._clean(X_np)
-        return self._reg.predict(X_np)
+
+        X_std = self._standardize_apply(X_np)
+        return self._reg.predict(X_std)
 
     def predict_one(self, x_row):
         x = np.asarray(x_row).reshape(1, -1)
@@ -108,8 +151,8 @@ class ForecastModel:
 
     # Optional: nützlich für Diagnose
     def get_coef(self) -> Optional[np.ndarray]:
+        # Koeffizienten beziehen sich auf den STANDARDISIERTEN Feature-Space
         return None if self._reg is None else self._reg.coef_.copy()
 
     def get_intercept(self) -> Optional[float]:
         return None if self._reg is None else float(self._reg.intercept_)
-

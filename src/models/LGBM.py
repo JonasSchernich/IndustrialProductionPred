@@ -112,7 +112,16 @@ class ForecastModel:
     @staticmethod
     def _clean(X: np.ndarray) -> np.ndarray:
         X = np.asarray(X, dtype=float)
-        return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+
+        # WICHTIG: Wir dürfen NaNs NICHT entfernen, damit LightGBM sie nativ nutzen kann.
+        # Wir entfernen nur +/- Unendlich (Inf), da Tree-Modelle damit Probleme haben können.
+        # Wir wandeln Inf in NaN um, damit LightGBM sie als "Missing" behandelt.
+
+        if not np.isfinite(X).all():
+            X = X.copy()
+            X[np.isinf(X)] = np.nan
+
+        return X
 
     def _split_train_val_tail(
         self, X: np.ndarray, y: np.ndarray, sample_weight: Optional[np.ndarray]
