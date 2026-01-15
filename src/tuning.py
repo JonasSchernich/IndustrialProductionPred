@@ -619,6 +619,333 @@ def run_stageA(
     _progress(f"[Stage A] Shortlist saved with {len(shortlist)} configs.")
     return shortlist
 
+def run_stageA_block_chunked(
+        model_name: str,
+        model_ctor: Callable[[Dict[str, Any]], Any],
+        model_grid: List[Dict[str, Any]],
+        X: pd.DataFrame,
+        y: pd.Series,
+        cfg: GlobalConfig,
+        block_id: int,
+        X_full_lagged: Optional[pd.DataFrame] = None,
+        rolling_imp: Optional[pd.DataFrame] = None,
+        file_suffix: Optional[str] = None,
+        config_id_offset: int = 0,
+) -> pd.DataFrame:
+    """
+    Stage-A-Helfer für Chunked-Run:
+    - rechnet GENAU EINEN Block (block_id)
+    - für ein bel. Subset des Grids (model_grid)
+    - ohne Halving/Survivors-Selektion
+    - schreibt preds/rmse/configs ins StageA-Ordner
+      (Dateinamen optional mit Suffix, z.B. '_split1')
+    - gibt das RMSE-DataFrame für diesen Block zurück
+    """
+    use_dynamic_fi = (X_full_lagged is not None and rolling_imp is not None)
+    _progress(
+        f"[Stage A Chunked] Block {block_id} | "
+        f"{'DYNAMIC FI' if use_dynamic_fi else 'FULL FE'} | "
+        f"{len(model_grid)} configs"
+    )
+
+    rs = _mk_paths(model_name, cfg)
+    T = len(y)
+    y_shifted_for_nowcast = y.shift(1)
+
+    # Block-Zeiten aus stageA_blocks holen
+    blocks = list(stageA_blocks(cfg, T))
+    matches = [b for b in blocks if b[3] == block_id]
+    if not matches:
+        raise ValueError(f"Block {block_id} nicht in stageA_blocks gefunden.")
+    train_end, oos_start, oos_end, _ = matches[0]
+    oos_end_eff = min(oos_end, T - 1)
+    if oos_end_eff < oos_start:
+        _progress(f"[Stage A Chunked] Block {block_id}: leeres OOS-Fenster, nichts zu tun.")
+        return pd.DataFrame()
+
+    _progress(
+        f"[Stage A Chunked][Block {block_id}] train_end={train_end}, "
+        f"OOS={oos_start}-{oos_end_eff} | configs={len(model_grid)}"
+    )
+
+    I_t_train = train_end + 1
+
+    # Ausgabe-Dateien (mit optionalem Suffix)
+    suffix = file_suffix or ""
+    block_dir = rs.out_stageA / f"block{block_id}"
+    preds_path = block_dir / f"preds{suffix}.csv"
+    rmse_path = block_dir / f"rmse{suffix}.csv"
+    configs_path = block_dir / f"configs{suffix}.csv"
+
+    preds_records: List[Dict[str, Any]] = []
+    rmse_records: List[Dict[str, Any]] = []
+    configs_records: List[Dict[str, Any]] = []
+
+    for i, hp in enumerate(model_grid, start=1):
+        local_config_id = config_id_offset + i
+        global_id = hp.get("global_id", None)  # optionaler stabiler ID aus dem Notebook
+
+        _progress(
+            f"[Stage A Chunked][Block {block_id}] "
+            f"Config {i}/{len(model_grid)} (local_id={local_config_id}, global_id={global_id})"
+        )
+
+        y_true_block: List[float] = []
+        y_pred_block: List[float] = []
+        n_months = (oos_end_eff - oos_start + 1)
+
+        hp_eff = _hp(cfg, hp)
+        hp_seeded = dict(hp)
+        hp_seeded["seed"] = cfg.seed
+        model = model_ctor(hp_seeded)
+        weight_decay = hp_eff["sample_weight_decay"]
+
+        X_red_for_oos: Optional[pd.DataFrame] = None
+        Xb_tr: Optional[np.ndarray] = None
+        y_tr: Optional[pd.Series] = None
+        dr_map: Optional[_DRMap] = None
+
+        if use_dynamic_fi:
+            # --- DYNAMIC FI Pipeline (wie in run_stageA) ---
+            n_features = int(hp_eff["n_features_to_use"])
+            anchor_date = y.index[train_end]
+            try:
+                importance_scores_for_anchor = rolling_imp.loc[:anchor_date].iloc[-1]
+            except Exception:
+                pos = rolling_imp.index.get_indexer([anchor_date], method="pad")[0]
+                importance_scores_for_anchor = (
+                    rolling_imp.iloc[pos] if pos != -1 else rolling_imp.iloc[0]
+                )
+
+            if importance_scores_for_anchor.isnull().all():
+                top_k_features = X_full_lagged.columns.tolist()[:n_features]
+            else:
+                top_k_features = importance_scores_for_anchor.nlargest(n_features).index.tolist()
+
+            X_subset = X_full_lagged[top_k_features].reindex(y.index)
+
+            X_train_window = X_subset.iloc[:I_t_train]
+            first_valid_date = X_train_window.first_valid_index()
+            first_valid_idx_int = (
+                0 if first_valid_date is None else y.index.get_loc(first_valid_date)
+            )
+            if first_valid_idx_int > train_end:
+                first_valid_idx_int = max(0, train_end)
+
+            stop = max(first_valid_idx_int, I_t_train)
+            X_tr_pd = X_subset.iloc[first_valid_idx_int:stop]
+            y_tr = y.iloc[first_valid_idx_int:stop]
+            mask = ~y_tr.isna()
+            X_tr_pd, y_tr = X_tr_pd.loc[mask], y_tr.loc[mask]
+
+            X_red_for_oos = X_subset
+            Xb_tr = X_tr_pd.to_numpy(dtype=float)
+
+        else:
+            # --- FULL FE Pipeline (wie in run_stageA) ---
+            all_blocks = hp_eff["target_block_set"] or []
+            pre_dr_blocks = [b for b in all_blocks if b in HIGH_DIM_TARGET_BLOCKS]
+            post_dr_blocks = [b for b in all_blocks if b in PROTECTED_TARGET_BLOCKS]
+
+            # 1) Lags
+            lag_map = select_lags_per_feature(X, L=hp_eff["lag_candidates"])
+
+            # 2) Train-Features
+            X_eng = build_engineered_matrix(X, lag_map)
+            X_aug_pre_dr, _ = _augment_with_target_blocks(
+                X_eng.iloc[:I_t_train], pre_dr_blocks
+            )
+
+            max_lag_used = max([_lag_of(c) for c in X_eng.columns] + [0])
+            head_needed = max_lag_used
+
+            taus_base_A = np.arange(1, int(I_t_train), dtype=int)
+            taus_scr_mask = (taus_base_A - head_needed >= 0)
+            taus_scr = (
+                taus_base_A[taus_scr_mask]
+                if np.any(taus_scr_mask)
+                else (taus_base_A[-1:] if taus_base_A.size > 0 else np.array([], dtype=int))
+            )
+            if len(taus_scr) == 0 and I_t_train > 1:
+                taus_scr = np.array([I_t_train - 1], dtype=int)
+
+            # 3) Screening
+            keep_cols, scores = screen_k1(
+                X_eng=X_aug_pre_dr,
+                y=y_shifted_for_nowcast,
+                I_t=I_t_train,
+                corr_spec=hp_eff["corr_spec"],
+                taus=taus_scr,
+                k1_topk=hp_eff["k1_topk"],
+                threshold=hp_eff["screen_threshold"],
+            )
+            X_sel = X_aug_pre_dr.loc[:, keep_cols]
+
+            # 4) Redundanz
+            kept = redundancy_reduce_greedy(
+                X_sel,
+                hp_eff["corr_spec"],
+                taus_scr,
+                hp_eff["redundancy_param"],
+                scores=scores,
+            )
+
+            # 5) OOS-Matrix
+            X_eng_full = build_engineered_matrix(X, lag_map)
+            X_aug_full_pre_dr, _ = _augment_with_target_blocks(
+                X_eng_full, pre_dr_blocks
+            )
+            X_red_pre_dr = X_aug_full_pre_dr.loc[:, kept]
+            X_red_for_oos = X_red_pre_dr
+
+            # 6) Finale Train-Daten
+            head_needed_final = max([_lag_of(c) for c in X_red_pre_dr.columns] + [0])
+            taus_base_model = np.arange(1, int(I_t_train), dtype=int)
+            taus_model_mask = (taus_base_model - head_needed_final >= 0)
+            taus_model = (
+                taus_base_model[taus_model_mask]
+                if np.any(taus_model_mask)
+                else (taus_base_model[-1:] if taus_base_model.size > 0 else np.array([], dtype=int))
+            )
+            if len(taus_model) == 0 and I_t_train > 1:
+                taus_model = np.array([I_t_train - 1], dtype=int)
+
+            X_tr_pre_dr = X_red_pre_dr.iloc[taus_model, :].copy()
+            y_tr = y.iloc[taus_model]
+
+            # 7) DR
+            dr_map = fit_dr(
+                X_tr_pre_dr,
+                method=hp_eff["dr_method"],
+                pca_var_target=hp_eff["pca_var_target"],
+                pca_kmax=hp_eff["pca_kmax"],
+                pls_components=hp_eff["pls_components"],
+            )
+            Xb_tr = transform_dr(
+                dr_map,
+                X_tr_pre_dr,
+                y_tr,
+                fit_pls=(hp_eff["dr_method"] == "pls"),
+            )
+
+            # 8) Protected Blöcke (AR1/Chronos nach DR)
+            if post_dr_blocks:
+                X_post_tr, _ = _augment_with_target_blocks(
+                    pd.DataFrame(index=X_tr_pre_dr.index), post_dr_blocks
+                )
+                X_post_tr_np = np.nan_to_num(
+                    X_post_tr.values, nan=0.0, posinf=0.0, neginf=0.0
+                )
+                Xb_tr = np.hstack([Xb_tr, X_post_tr_np])
+
+        # Guardrail: fehlende Trainingsdaten
+        if Xb_tr is None or y_tr is None or X_red_for_oos is None:
+            _progress(
+                f"  WARN: keine gültigen Trainingsdaten für Config local_id={local_config_id}. Überspringe."
+            )
+            continue
+
+        # Modell fitten (mit optionalem Decay-Weighting)
+        if weight_decay is not None:
+            try:
+                n_train = len(y_tr)
+                weights = float(weight_decay) ** np.arange(n_train - 1, -1, -1)
+                weights = weights / np.mean(weights)
+                model.fit(Xb_tr, y_tr.to_numpy(dtype=float), sample_weight=weights)
+            except TypeError:
+                model.fit(Xb_tr, y_tr.to_numpy(dtype=float))
+        else:
+            model.fit(Xb_tr, y_tr.to_numpy(dtype=float))
+
+        # --- OOS-Loop für diesen Block ---
+        for t in range(oos_start - 1, oos_end_eff):
+            date_t_plus_1 = y.index[t + 1]
+
+            if use_dynamic_fi:
+                x_eval_pd = X_red_for_oos.loc[[date_t_plus_1]].copy()
+                Xb_eval = np.nan_to_num(
+                    x_eval_pd.values, nan=0.0, posinf=0.0, neginf=0.0
+                )
+            else:
+                x_eval_pre_dr_pd = X_red_for_oos.loc[[date_t_plus_1]].copy()
+                if dr_map is not None:
+                    Xb_eval = transform_dr(
+                        dr_map, x_eval_pre_dr_pd, fit_pls=False
+                    )
+                else:
+                    Xb_eval = np.nan_to_num(
+                        x_eval_pre_dr_pd.values,
+                        nan=0.0,
+                        posinf=0.0,
+                        neginf=0.0,
+                    )
+
+                if not use_dynamic_fi:
+                    all_blocks = hp_eff["target_block_set"] or []
+                    post_dr_blocks = [b for b in all_blocks if b in PROTECTED_TARGET_BLOCKS]
+                    if post_dr_blocks:
+                        chronos_index_t = y.index[[t + 1]]
+                        X_post_ev, _ = _augment_with_target_blocks(
+                            pd.DataFrame(index=chronos_index_t), post_dr_blocks
+                        )
+                        X_post_ev_np = np.nan_to_num(
+                            X_post_ev.values, nan=0.0, posinf=0.0, neginf=0.0
+                        )
+                        Xb_eval = np.hstack([Xb_eval, X_post_ev_np])
+
+            y_hat = float(model.predict_one(Xb_eval))
+            y_true = float(y.iloc[t + 1])
+
+            y_true_block.append(y_true)
+            y_pred_block.append(y_hat)
+
+            preds_records.append({
+                "block": f"block{block_id}",
+                "t": t,
+                "date_t_plus_1": date_t_plus_1.strftime("%Y-%m-%d"),
+                "y_true": y_true,
+                "y_pred": y_hat,
+                "model": model_name,
+                "config_id": local_config_id,
+                "config_global_id": global_id,
+            })
+
+        # RMSE für diese Config & diesen Block
+        score = rmse(np.array(y_true_block), np.array(y_pred_block)) if y_true_block else np.nan
+        rmse_records.append({
+            "block": f"block{block_id}",
+            "model": model_name,
+            "config_id": local_config_id,
+            "config_global_id": global_id,
+            "rmse": score,
+            "n_oos": len(y_true_block),
+            "train_end": train_end,
+            "oos_start": oos_start,
+            "oos_end": oos_end_eff,
+        })
+
+        configs_records.append({
+            "block": f"block{block_id}",
+            "model": model_name,
+            "config_id": local_config_id,
+            "config_global_id": global_id,
+            "config_json": json.dumps(hp, sort_keys=True),
+        })
+
+    # Schreiben der CSVs (append_csv kümmert sich um Header/Append)
+    if preds_records:
+        append_csv(preds_path, pd.DataFrame(preds_records))
+    if rmse_records:
+        append_csv(rmse_path, pd.DataFrame(rmse_records))
+    if configs_records:
+        append_csv(configs_path, pd.DataFrame(configs_records))
+
+    rmse_df = pd.DataFrame(rmse_records)
+    _progress(
+        f"[Stage A Chunked][Block {block_id}] fertig. "
+        f"{len(rmse_df)} Configs geloggt → {rmse_path.name}"
+    )
+    return rmse_df
 
 def run_stageB(
         model_name: str,
