@@ -1,0 +1,2 @@
+block,model,config_id,config_json
+block2,baseline_rw,1,"{""strategy"": ""RW"", ""seed"": 42}"

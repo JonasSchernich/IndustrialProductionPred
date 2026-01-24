@@ -1,0 +1,6 @@
+block,model,config_id,config_json
+block3,gpr_dynamic_fi,1,"{""n_features_to_use"": 50, ""sample_weight_decay"": null, ""kernel"": ""rbf"", ""ard"": true, ""nu"": 1.5, ""n_restarts_optimizer"": 2, ""noise_alpha"": 0.0001, ""length_scale_init"": 1.0, ""normalize_y"": true, ""seed"": 42}"
+block3,gpr_dynamic_fi,2,"{""n_features_to_use"": 50, ""sample_weight_decay"": null, ""kernel"": ""rbf"", ""ard"": true, ""nu"": 1.5, ""n_restarts_optimizer"": 10, ""noise_alpha"": 0.0001, ""length_scale_init"": 1.0, ""normalize_y"": true, ""seed"": 42}"
+block3,gpr_dynamic_fi,3,"{""n_features_to_use"": 50, ""sample_weight_decay"": 0.99, ""kernel"": ""rbf"", ""ard"": true, ""nu"": 1.5, ""n_restarts_optimizer"": 2, ""noise_alpha"": 0.0001, ""length_scale_init"": 1.0, ""normalize_y"": true, ""seed"": 42}"
+block3,gpr_dynamic_fi,4,"{""n_features_to_use"": 50, ""sample_weight_decay"": 0.99, ""kernel"": ""rbf"", ""ard"": true, ""nu"": 1.5, ""n_restarts_optimizer"": 10, ""noise_alpha"": 0.0001, ""length_scale_init"": 1.0, ""normalize_y"": true, ""seed"": 42}"
+block3,gpr_dynamic_fi,5,"{""n_features_to_use"": 50, ""sample_weight_decay"": 0.99, ""kernel"": ""matern"", ""ard"": true, ""nu"": 2.5, ""n_restarts_optimizer"": 2, ""noise_alpha"": 0.0001, ""length_scale_init"": 1.0, ""normalize_y"": true, ""seed"": 42}"

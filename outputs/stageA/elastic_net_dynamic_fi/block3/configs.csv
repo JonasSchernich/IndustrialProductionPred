@@ -1,0 +1,3 @@
+block,model,config_id,config_json
+block3,elastic_net_dynamic_fi,1,"{""n_features_to_use"": 50, ""sample_weight_decay"": 0.99, ""alpha"": 0.0, ""lambda"": 100.0, ""seed"": 42}"
+block3,elastic_net_dynamic_fi,2,"{""n_features_to_use"": 50, ""sample_weight_decay"": 0.99, ""alpha"": 0.25, ""lambda"": 1.0, ""seed"": 42}"

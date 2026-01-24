@@ -1,0 +1,2 @@
+block,model,config_id,config_json
+block2,tabpfn_dynamic_fi,1,"{""n_features_to_use"": 20, ""sample_weight_decay"": null, ""use_gpu"": true, ""device"": null, ""seed"": 42}"

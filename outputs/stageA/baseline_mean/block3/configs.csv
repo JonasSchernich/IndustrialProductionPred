@@ -1,0 +1,2 @@
+block,model,config_id,config_json
+block3,baseline_mean,1,"{""strategy"": ""Mean"", ""seed"": 42}"

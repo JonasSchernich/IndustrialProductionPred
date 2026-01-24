@@ -1,0 +1,2 @@
+block,model,config_id,config_json
+block3,baseline_ma60,1,"{""strategy"": ""MA60"", ""seed"": 42}"
