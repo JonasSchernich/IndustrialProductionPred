@@ -1,0 +1,2118 @@
+[
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 5
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 100.0,
+    "seed": 42,
+    "global_id": 6
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 11
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 40
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 100.0,
+    "seed": 42,
+    "global_id": 41
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 46
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 100.0,
+    "seed": 42,
+    "global_id": 216
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 221
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 250
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 100.0,
+    "seed": 42,
+    "global_id": 251
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 256
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 284
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 290
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.5,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 297
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 304
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 311
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 319
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.25,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 325
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.5,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 332
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 339
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 346
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 425
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 100.0,
+    "seed": 42,
+    "global_id": 426
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 431
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 459
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 460
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 100.0,
+    "seed": 42,
+    "global_id": 461
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 466
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.5,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 472
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 479
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 486
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 0.0001,
+    "seed": 42,
+    "global_id": 490
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 0.001,
+    "seed": 42,
+    "global_id": 491
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 0.01,
+    "seed": 42,
+    "global_id": 492
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 493
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 494
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 0.0001,
+    "seed": 42,
+    "global_id": 497
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 0.001,
+    "seed": 42,
+    "global_id": 498
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 0.01,
+    "seed": 42,
+    "global_id": 499
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 500
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.5,
+    "lambda": 0.0001,
+    "seed": 42,
+    "global_id": 504
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.5,
+    "lambda": 0.001,
+    "seed": 42,
+    "global_id": 505
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.5,
+    "lambda": 0.01,
+    "seed": 42,
+    "global_id": 506
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.5,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 507
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.75,
+    "lambda": 0.0001,
+    "seed": 42,
+    "global_id": 511
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.75,
+    "lambda": 0.001,
+    "seed": 42,
+    "global_id": 512
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.75,
+    "lambda": 0.01,
+    "seed": 42,
+    "global_id": 513
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 514
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 1.0,
+    "lambda": 0.0001,
+    "seed": 42,
+    "global_id": 518
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 1.0,
+    "lambda": 0.001,
+    "seed": 42,
+    "global_id": 519
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 1.0,
+    "lambda": 0.01,
+    "seed": 42,
+    "global_id": 520
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 521
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 529
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.25,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 535
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 536
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.5,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 542
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 549
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 556
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pls",
+    "pls_components": 30,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 565
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pls",
+    "pls_components": 30,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 571
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pls",
+    "pls_components": 30,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 600
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pls",
+    "pls_components": 30,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 606
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 635
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 100.0,
+    "seed": 42,
+    "global_id": 636
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 641
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 669
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 670
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 100.0,
+    "seed": 42,
+    "global_id": 671
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 676
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 689
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 696
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 704
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.25,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 710
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.5,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 717
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 724
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 731
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 746
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.5,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 752
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 759
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 766
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pls",
+    "pls_components": 30,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 775
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pls",
+    "pls_components": 30,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.0,
+    "lambda": 10.0,
+    "seed": 42,
+    "global_id": 810
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pls",
+    "pls_components": 30,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.25,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 816
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pls",
+    "pls_components": 30,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": 0.99,
+    "alpha": 0.5,
+    "lambda": 1.0,
+    "seed": 42,
+    "global_id": 823
+  }
+]

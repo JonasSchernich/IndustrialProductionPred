@@ -1,0 +1,256 @@
+[
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": [
+      "AR1",
+      "Chronos",
+      "TSFresh"
+    ],
+    "sample_weight_decay": 0.99,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 59
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": [
+      "AR1",
+      "Chronos",
+      "TSFresh"
+    ],
+    "sample_weight_decay": 0.99,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 66
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pls",
+    "pls_components": 30,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": [
+      "AR1",
+      "Chronos",
+      "TSFresh"
+    ],
+    "sample_weight_decay": 0.99,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 199
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pls",
+    "pls_components": 30,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": [
+      "AR1",
+      "Chronos",
+      "TSFresh"
+    ],
+    "sample_weight_decay": 0.99,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 206
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": [
+      "AR1",
+      "Chronos",
+      "TSFresh"
+    ],
+    "sample_weight_decay": null,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 234
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": [
+      "AR1",
+      "Chronos",
+      "TSFresh"
+    ],
+    "sample_weight_decay": null,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 241
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": [
+      "AR1",
+      "Chronos",
+      "TSFresh"
+    ],
+    "sample_weight_decay": 0.99,
+    "alpha": 0.5,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 472
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": [
+      "AR1",
+      "Chronos",
+      "TSFresh"
+    ],
+    "sample_weight_decay": 0.99,
+    "alpha": 0.75,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 689
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "none",
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": [
+      "AR1",
+      "Chronos",
+      "TSFresh"
+    ],
+    "sample_weight_decay": 0.99,
+    "alpha": 1.0,
+    "lambda": 0.1,
+    "seed": 42,
+    "global_id": 696
+  }
+]
