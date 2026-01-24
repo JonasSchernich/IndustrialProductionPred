@@ -1,0 +1,32 @@
+# Core Data Science Stack (Genutzt von allen Modellen: SVR, EN, ET, GPR, etc.)
+numpy>=1.22.0
+pandas>=2.0.0
+scipy>=1.10.0
+scikit-learn>=1.3.0      # Essentiell für SVR, GPR, ElasticNet, ExtraTrees & PCA (SFM)
+
+# Gradient Boosting & Tabular Deep Learning
+lightgbm>=4.0.0          # LGBM.py & LGBM.ipynb (nutzt neuere Callback-API)
+tabpfn>=2.0.0            # TabPFN.py & TabPFN.ipynb (erfordert explizit v2.x Regressor API)
+torch>=2.0.0             # Backend für TabPFN und Chronos
+
+# Visualization (Genutzt in allen .ipynb Notebooks zur Auswertung)
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Econometrics & Statistical Testing (Genutzt in AR.ipynb)
+statsmodels>=0.14.0
+
+# Time Series Feature Engineering (Genutzt in tsfresh_slim.ipynb)
+tsfresh>=0.20.0
+
+# Foundation Models / Chronos (Genutzt in chronos.ipynb)
+transformers>=4.30.0     # Für Amazon Chronos Pretrained Models
+accelerate>=0.20.0       # Optimierung für Transformer-Inferenz
+
+# IO / Dateiformate
+pyarrow>=12.0.0          # Parquet Support für io_timesplits.py und Caching
+openpyxl>=3.1.0          # ZWINGEND erforderlich für load_data.py (Excel-Import)
+
+# Notebook Execution (Optional, aber empfohlen für die .ipynb Files)
+ipykernel>=6.0.0
+tqdm>=4.65.0             # Oft für Ladebalken in Trainings-Loops verwendet
