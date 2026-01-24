@@ -1,0 +1,2 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block3,tabpfn_dynamic_fi,1,1.5237394828664508,20,220,221,240

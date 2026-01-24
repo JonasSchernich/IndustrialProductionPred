@@ -1,0 +1,13 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block2,sfm_without_target,1,2.9245285935495375,20,200,201,220
+block2,sfm_without_target,2,2.9245284483705674,20,200,201,220
+block2,sfm_without_target,3,2.355396918407848,20,200,201,220
+block2,sfm_without_target,4,2.3553969188579216,20,200,201,220
+block2,sfm_without_target,5,2.3553969634223018,20,200,201,220
+block2,sfm_without_target,6,2.355401489875993,20,200,201,220
+block2,sfm_without_target,7,2.3564022121596317,20,200,201,220
+block2,sfm_without_target,8,2.420032033757632,20,200,201,220
+block2,sfm_without_target,9,2.4200320251162424,20,200,201,220
+block2,sfm_without_target,10,2.42003116963421,20,200,201,220
+block2,sfm_without_target,11,2.41994577681741,20,200,201,220
+block2,sfm_without_target,12,2.4127518559357144,20,200,201,220

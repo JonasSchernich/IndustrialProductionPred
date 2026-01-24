@@ -1,0 +1,16 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block3,svr_without_target,1,1.6467034213780494,20,220,221,240
+block3,svr_without_target,2,1.4542967714204564,20,220,221,240
+block3,svr_without_target,3,1.6365976996876452,20,220,221,240
+block3,svr_without_target,4,1.4651933361835678,20,220,221,240
+block3,svr_without_target,5,1.6619214194754346,20,220,221,240
+block3,svr_without_target,6,1.6616170021482006,20,220,221,240
+block3,svr_without_target,7,1.6516679508435994,20,220,221,240
+block3,svr_without_target,8,1.611567517135704,20,220,221,240
+block3,svr_without_target,9,1.5406908054568351,20,220,221,240
+block3,svr_without_target,10,1.5043023214739442,20,220,221,240
+block3,svr_without_target,11,1.5955660845157476,20,220,221,240
+block3,svr_without_target,12,1.9222189005994401,20,220,221,240
+block3,svr_without_target,13,1.534794087921345,20,220,221,240
+block3,svr_without_target,14,1.531632787457712,20,220,221,240
+block3,svr_without_target,15,1.4975386566854214,20,220,221,240

@@ -1,0 +1,6 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block3,sfm_with_target,1,2.715141308428954,20,220,221,240
+block3,sfm_with_target,2,2.715140697068464,20,220,221,240
+block3,sfm_with_target,3,2.71508017546073,20,220,221,240
+block3,sfm_with_target,4,2.709058661728054,20,220,221,240
+block3,sfm_with_target,5,2.3113873933946576,20,220,221,240

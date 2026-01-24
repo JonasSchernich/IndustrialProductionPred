@@ -1,0 +1,8 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block2,elastic_net_dynamic_fi,1,2.6221739482374655,20,200,201,220
+block2,elastic_net_dynamic_fi,2,2.63831343344512,20,200,201,220
+block2,elastic_net_dynamic_fi,3,2.63831343344512,20,200,201,220
+block2,elastic_net_dynamic_fi,4,2.63831343344512,20,200,201,220
+block2,elastic_net_dynamic_fi,5,2.63831343344512,20,200,201,220
+block2,elastic_net_dynamic_fi,6,2.63831343344512,20,200,201,220
+block2,elastic_net_dynamic_fi,7,2.63831343344512,20,200,201,220

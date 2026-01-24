@@ -1,0 +1,9 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block1,tabpfn_without_target,1,1.0175875901299267,20,180,181,200
+block1,tabpfn_without_target,2,1.9258542535740777,20,180,181,200
+block1,tabpfn_without_target,3,1.0250694261498718,20,180,181,200
+block1,tabpfn_without_target,4,1.7528556591721534,20,180,181,200
+block1,tabpfn_without_target,5,0.9806964922307745,20,180,181,200
+block1,tabpfn_without_target,6,1.9573755018269856,20,180,181,200
+block1,tabpfn_without_target,7,0.9994880484248951,20,180,181,200
+block1,tabpfn_without_target,8,1.7056510180057565,20,180,181,200

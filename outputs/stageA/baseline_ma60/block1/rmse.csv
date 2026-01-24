@@ -1,0 +1,2 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block1,baseline_ma60,1,1.0995662835282871,20,180,181,200

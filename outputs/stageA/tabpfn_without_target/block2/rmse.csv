@@ -1,0 +1,6 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block2,tabpfn_without_target,1,2.435690153173049,20,200,201,220
+block2,tabpfn_without_target,2,2.455261655836263,20,200,201,220
+block2,tabpfn_without_target,3,2.5117896373452453,20,200,201,220
+block2,tabpfn_without_target,4,2.5155152234109996,20,200,201,220
+block2,tabpfn_without_target,5,3.101468239185246,20,200,201,220

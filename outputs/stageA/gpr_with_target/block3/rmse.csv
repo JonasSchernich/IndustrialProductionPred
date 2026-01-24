@@ -1,0 +1,6 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block3,gpr_with_target,1,2.7083167402052144,20,220,221,240
+block3,gpr_with_target,2,2.7083167402052144,20,220,221,240
+block3,gpr_with_target,3,2.7083167402052144,20,220,221,240
+block3,gpr_with_target,4,2.7083167402052144,20,220,221,240
+block3,gpr_with_target,5,2.7083167402052144,20,220,221,240

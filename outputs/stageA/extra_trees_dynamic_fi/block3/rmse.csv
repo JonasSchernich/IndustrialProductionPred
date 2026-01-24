@@ -1,0 +1,6 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block3,extra_trees_dynamic_fi,1,1.6024872377668435,20,220,221,240
+block3,extra_trees_dynamic_fi,2,1.581259856284535,20,220,221,240
+block3,extra_trees_dynamic_fi,3,1.564548063842719,20,220,221,240
+block3,extra_trees_dynamic_fi,4,1.5605421809658513,20,220,221,240
+block3,extra_trees_dynamic_fi,5,1.5586602851714755,20,220,221,240

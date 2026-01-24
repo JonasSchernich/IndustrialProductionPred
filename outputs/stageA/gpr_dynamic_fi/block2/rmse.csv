@@ -1,0 +1,6 @@
+block,model,config_id,rmse,n_oos,train_end,oos_start,oos_end
+block2,gpr_dynamic_fi,1,2.6008320390722615,20,200,201,220
+block2,gpr_dynamic_fi,2,2.6008320390722615,20,200,201,220
+block2,gpr_dynamic_fi,3,2.6008320390722615,20,200,201,220
+block2,gpr_dynamic_fi,4,2.6008320390722615,20,200,201,220
+block2,gpr_dynamic_fi,5,2.600832040574355,20,200,201,220

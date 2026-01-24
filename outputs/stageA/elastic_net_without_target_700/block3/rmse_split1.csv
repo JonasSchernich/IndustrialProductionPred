@@ -1,0 +1,11 @@
+block,model,config_id,config_global_id,rmse,n_oos,train_end,oos_start,oos_end
+block3,elastic_net_without_target_700,1,425,1.452666126222133,20,220,221,240
+block3,elastic_net_without_target_700,2,459,1.6268953778067954,20,220,221,240
+block3,elastic_net_without_target_700,3,490,1.5553000649990196,20,220,221,240
+block3,elastic_net_without_target_700,4,491,1.5550543425019658,20,220,221,240
+block3,elastic_net_without_target_700,5,497,1.5552583819586907,20,220,221,240
+block3,elastic_net_without_target_700,6,504,1.5552167095949356,20,220,221,240
+block3,elastic_net_without_target_700,7,511,1.5551750479105377,20,220,221,240
+block3,elastic_net_without_target_700,8,518,1.5551333969082808,20,220,221,240
+block3,elastic_net_without_target_700,9,635,1.450211614143568,20,220,221,240
+block3,elastic_net_without_target_700,10,669,1.7473598300581914,20,220,221,240
