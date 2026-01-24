@@ -1,0 +1,6 @@
+config_id,rmse_overall,model
+1,2.3612050849848063,svr_dynamic_fi
+2,2.3617792518483234,svr_dynamic_fi
+3,2.3568506531353877,svr_dynamic_fi
+4,2.3735590755197635,svr_dynamic_fi
+5,2.3663865818077823,svr_dynamic_fi

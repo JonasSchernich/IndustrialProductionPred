@@ -1,0 +1,6 @@
+config_id,rmse_overall,model
+1,2.3951340868861006,extra_trees_dynamic_fi
+2,2.390019533716684,extra_trees_dynamic_fi
+3,2.388120916428197,extra_trees_dynamic_fi
+4,2.3999532222882793,extra_trees_dynamic_fi
+5,2.3372541865976926,extra_trees_dynamic_fi

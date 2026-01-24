@@ -1,0 +1,6 @@
+config_id,rmse_overall,model
+1,2.318511691171174,lightgbm_without_target_mac
+2,2.3204700169523793,lightgbm_without_target_mac
+3,2.3204700169523793,lightgbm_without_target_mac
+4,2.3204700169523793,lightgbm_without_target_mac
+5,2.3204700169523793,lightgbm_without_target_mac

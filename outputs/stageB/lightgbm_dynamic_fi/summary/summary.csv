@@ -1,0 +1,6 @@
+config_id,rmse_overall,model
+1,2.372882519225636,lightgbm_dynamic_fi
+2,2.3739597578209146,lightgbm_dynamic_fi
+3,2.376938197912691,lightgbm_dynamic_fi
+4,2.378056876796806,lightgbm_dynamic_fi
+5,2.372882519225636,lightgbm_dynamic_fi

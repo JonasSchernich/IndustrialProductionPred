@@ -1,0 +1,9 @@
+[
+  {
+    "n_features_to_use": 20,
+    "sample_weight_decay": null,
+    "use_gpu": true,
+    "device": null,
+    "seed": 42
+  }
+]

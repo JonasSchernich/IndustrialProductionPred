@@ -1,0 +1,6 @@
+config_id,rmse_overall,model
+1,2.128799151715336,extra_trees
+2,2.147861782686698,extra_trees
+3,2.2175218946724646,extra_trees
+4,2.1473789638951004,extra_trees
+5,2.2274191433856165,extra_trees

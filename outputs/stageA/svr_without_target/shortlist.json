@@ -1,0 +1,157 @@
+[
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "variant": "epsilon",
+    "kernel": "rbf",
+    "C": 1.0,
+    "gamma": 0.01,
+    "epsilon": 0.3,
+    "shrinking": true,
+    "max_iter": -1,
+    "tol": 0.001,
+    "seed": 42
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "expanding",
+      "lam": null
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "variant": "epsilon",
+    "kernel": "rbf",
+    "C": 1.0,
+    "gamma": 0.01,
+    "epsilon": 0.3,
+    "shrinking": true,
+    "max_iter": -1,
+    "tol": 0.001,
+    "seed": 42
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "variant": "nu",
+    "kernel": "rbf",
+    "C": 1.0,
+    "gamma": 0.01,
+    "nu": 0.3,
+    "shrinking": true,
+    "max_iter": -1,
+    "tol": 0.001,
+    "seed": 42
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 0.9,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "variant": "nu",
+    "kernel": "rbf",
+    "C": 1.0,
+    "gamma": 0.01,
+    "nu": 0.3,
+    "shrinking": true,
+    "max_iter": -1,
+    "tol": 0.001,
+    "seed": 42
+  },
+  {
+    "lag_candidates": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "k1_topk": 700,
+    "redundancy_param": 1.0,
+    "dr_method": "pca",
+    "pca_kmax": 30,
+    "pca_var_target": 0.99,
+    "corr_spec": {
+      "mode": "ewma",
+      "lam": 0.98
+    },
+    "target_block_set": null,
+    "sample_weight_decay": null,
+    "variant": "epsilon",
+    "kernel": "rbf",
+    "C": 1.0,
+    "gamma": "scale",
+    "epsilon": 0.3,
+    "shrinking": true,
+    "max_iter": -1,
+    "tol": 0.001,
+    "seed": 42
+  }
+]

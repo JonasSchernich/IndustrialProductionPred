@@ -1,0 +1,6 @@
+config_id,rmse_overall,model
+1,2.34075219034824,sfm_with_target
+2,2.4955730023879554,sfm_with_target
+3,2.495572742117623,sfm_with_target
+4,2.495546976974754,sfm_with_target
+5,2.492986570798818,sfm_with_target

@@ -1,0 +1,6 @@
+config_id,rmse_overall,model
+1,2.3557162189526184,elastic_net_without_target_700
+2,2.355665702583269,elastic_net_without_target_700
+3,2.386533663919277,elastic_net_without_target_700
+4,2.3868271284458547,elastic_net_without_target_700
+5,2.386829031597504,elastic_net_without_target_700

@@ -1,0 +1,6 @@
+config_id,rmse_overall,model
+1,2.2177500282258857,tabpfn_without_target
+2,2.2627903743586306,tabpfn_without_target
+3,2.2911987472334894,tabpfn_without_target
+4,2.3140694285541255,tabpfn_without_target
+5,3.207126673540987,tabpfn_without_target
