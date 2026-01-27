@@ -7,19 +7,7 @@ from sklearn.svm import SVR as _SVR, NuSVR as _NuSVR
 
 class ForecastModel:
     """
-    Support Vector Regression (SVR) – Wrapper.
-
-    Workflow:
-      1. Train-only Z-Standardisierung von X.
-      2. SVR auf standardisierten Daten.
-
-    Varianten:
-      - epsilon-SVR (sklearn.svm.SVR) mit Parameter 'epsilon'
-      - nu-SVR      (sklearn.svm.NuSVR) mit Parameter 'nu'
-
-    Feature Importances:
-      - Nur verfügbar, wenn kernel='linear'.
-      - Werden als |w| (Standardized Coefficients) berechnet.
+    Support Vector Regression (SVR) wrapper.
     """
 
     def __init__(self, params: Optional[Dict[str, Any]] = None):
@@ -29,11 +17,11 @@ class ForecastModel:
         self._feature_names: Optional[List[str]] = None
         self._importances: Optional[np.ndarray] = None
 
-        # Skalierungsparameter (train-only Z-Standardisierung)
+        # Scaling params (train-only z-standardization)
         self._mu_: Optional[np.ndarray] = None
         self._sigma_: Optional[np.ndarray] = None
 
-        # --- robuste Defaults (sklearn-kompatibel) ---
+        # Defaults (sklearn-compatible)
         self._variant: str = str(self.params.get("variant", "epsilon")).lower()
         self._kernel: str = str(self.params.get("kernel", "rbf")).lower()
         self._C: float = float(self.params.get("C", 1.0))
@@ -44,15 +32,13 @@ class ForecastModel:
         self._coef0: float = float(self.params.get("coef0", 0.0))
         self._shrinking: bool = bool(self.params.get("shrinking", True))
         self._tol: float = float(self.params.get("tol", 1e-3))
-        self._max_iter: int = int(self.params.get("max_iter", -1))  # -1 = unbegrenzt
+        self._max_iter: int = int(self.params.get("max_iter", -1))  # -1 = unlimited
         self._seed: int = int(self.params.get("seed", 42))
 
-        # HINWEIS: SVR/NuSVR haben keinen 'random_state'-Parameter,
-        # aber wir speichern ihn für Konsistenz.
+        # Note: SVR/NuSVR do not expose 'random_state', but we keep the seed for consistency.
 
-        # --- Regressor aufsetzen (epsilon-SVR oder nu-SVR) ---
+        # Create regressor (epsilon-SVR or nu-SVR)
         if self._variant == "nu":
-            # nu-SVR: nutzt 'nu' statt 'epsilon'
             self._reg = _NuSVR(
                 kernel=self._kernel,
                 C=self._C,
@@ -65,7 +51,6 @@ class ForecastModel:
                 max_iter=self._max_iter,
             )
         else:
-            # Default: epsilon-SVR
             self._variant = "epsilon"
             self._reg = _SVR(
                 kernel=self._kernel,
@@ -84,17 +69,18 @@ class ForecastModel:
 
     @staticmethod
     def _clean(X: np.ndarray) -> np.ndarray:
+        """Convert to float array and replace NaN/inf with 0."""
         X = np.asarray(X, dtype=float)
         return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
 
     def _standardize_fit(self, X: np.ndarray) -> np.ndarray:
-        """Fit Z-Standardisierung auf X (Train) und wende sie an."""
+        """Fit z-standardization on X (train) and apply it."""
         X = self._clean(X)
         mu = X.mean(axis=0)
         sigma = X.std(axis=0, ddof=0)
 
         sigma_safe = sigma.copy()
-        sigma_safe[sigma_safe == 0.0] = 1.0  # konstante Features
+        sigma_safe[sigma_safe == 0.0] = 1.0  # constant features
 
         self._mu_ = mu
         self._sigma_ = sigma_safe
@@ -102,7 +88,7 @@ class ForecastModel:
         return (X - mu) / sigma_safe
 
     def _standardize_apply(self, X: np.ndarray) -> np.ndarray:
-        """Wende gespeicherte Z-Standardisierung auf neue Daten an."""
+        """Apply stored z-standardization to new data."""
         if self._mu_ is None or self._sigma_ is None:
             raise RuntimeError("Scaler parameters not fitted. Call fit() first.")
         X = self._clean(X)
@@ -113,7 +99,7 @@ class ForecastModel:
         return (X - self._mu_) / self._sigma_
 
     def fit(self, X, y, sample_weight: Optional[np.ndarray] = None):
-        # Metadata
+        # Capture feature names when available
         if isinstance(X, pd.DataFrame):
             self._feature_names = X.columns.tolist()
             X_np = X.values
@@ -126,10 +112,10 @@ class ForecastModel:
 
         y_np = np.asarray(y, dtype=float).ravel()
 
-        # 1. Standardisierung
+        # 1) Standardize
         X_std = self._standardize_fit(X_np)
 
-        # 2. Fit
+        # 2) Fit
         sw = None
         if sample_weight is not None:
             sw = np.asarray(sample_weight, dtype=float).ravel()
@@ -138,7 +124,7 @@ class ForecastModel:
 
         self._reg.fit(X_std, y_np, sample_weight=sw)
 
-        # 3. Importances (nur bei linear kernel)
+        # 3) Importances (linear kernel only)
         self._importances = None
         if self._kernel == "linear":
             if hasattr(self._reg, "coef_"):
@@ -155,11 +141,12 @@ class ForecastModel:
         else:
             X_np = np.asarray(X)
 
-        # Standardisierung anwenden
+        # Apply standardization
         X_std = self._standardize_apply(X_np)
         return self._reg.predict(X_std)
 
     def predict_one(self, x_row):
+        """Predict a single row."""
         x = np.asarray(x_row).reshape(1, -1)
         return float(self.predict(x)[0])
 
@@ -170,7 +157,7 @@ class ForecastModel:
         return dict(zip(names, self._importances.tolist()))
 
     def get_linear_weights(self) -> Optional[np.ndarray]:
-        """Nur sinnvoll bei kernel='linear'. Liefert |w| (oder None) bzgl. standardisiertem X."""
+        """Only meaningful for kernel='linear'. Returns |w| (or None) for standardized X."""
         return None if self._importances is None else self._importances.copy()
 
     def get_intercept(self) -> Optional[float]:

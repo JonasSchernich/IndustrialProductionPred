@@ -6,7 +6,7 @@ from pathlib import Path
 import os
 
 
-# ---------- Projekt-Root robust auflösen ----------
+# ---------- Projekt-Root ----------
 def _resolve_root() -> Path:
     env = os.environ.get("PROJECT_ROOT")
     if env:
@@ -18,7 +18,7 @@ def _resolve_root() -> Path:
 
 ROOT = _resolve_root()
 
-# ---------- Ordnerstruktur ----------
+# ---------- Folder Structure ----------
 PROCESSED = ROOT / "data" / "processed"
 OUTPUTS = ROOT / "outputs"
 LOGS = OUTPUTS / "logs"
@@ -29,7 +29,6 @@ for _p in [PROCESSED, OUTPUTS, LOGS, STAGEA_DIR, STAGEB_DIR]:
     _p.mkdir(parents=True, exist_ok=True)
 
 # ---------- CorrelationSpec ----------
-# Window entfernt, nur noch Modus und Lambda
 CorrelationMode = Literal["expanding", "ewma"]
 
 
@@ -51,14 +50,14 @@ THESIS_SPLITS = dict(W0_A=180, BLOCKS_A=((181, 200), (201, 220), (221, 240)), W0
 FAST_DEBUG = dict(W0_A=48, BLOCKS_A=((49, 60), (61, 72)), W0_B=73)
 
 
-# ---------- Globale Konfiguration ----------
+# ---------- Globale Configs ----------
 @dataclass
 class GlobalConfig:
     # Seeds & Refresh
     seed: int = 123
     refresh_cadence_months: int = 12
 
-    # Nuisance & Korrelation
+    # Nuisance & Correlation
     corr_spec: CorrelationSpec = field(default_factory=lambda: dict(DEFAULT_CORR_SPEC))
 
     # Feature Engineering
@@ -69,7 +68,7 @@ class GlobalConfig:
     k1_topk: int = 50
     screen_threshold: Optional[float] = None
 
-    # Redundanz (Cluster-Option entfernt)
+    # Redundance
     redundancy_method: Literal["greedy"] = "greedy"
     redundancy_param: float = 0.9
 
@@ -79,7 +78,7 @@ class GlobalConfig:
     pca_kmax: int = 25
     pls_components: int = 2
 
-    # Preset-Auswahl
+    # Preset Selection
     preset: str = "thesis"
 
     # Stage A/B Splits

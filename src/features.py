@@ -1,9 +1,11 @@
 # src/features.py
 from __future__ import annotations
-from typing import Optional, Dict, Any, Tuple, List
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
 
 
 # --------------------------------------------------------------------------------------
@@ -11,6 +13,7 @@ from dataclasses import dataclass
 # --------------------------------------------------------------------------------------
 
 def _spec_get(spec: Any, key: str, default=None):
+    """Safely read an attribute/key from a spec object or dict."""
     if spec is None:
         return default
     if isinstance(spec, dict):
@@ -19,6 +22,7 @@ def _spec_get(spec: Any, key: str, default=None):
 
 
 def _corr_equal_weight(x: np.ndarray, y: np.ndarray) -> float:
+    """Equal-weight (expanding) Pearson correlation."""
     n = min(len(x), len(y))
     if n <= 1:
         return 0.0
@@ -26,13 +30,14 @@ def _corr_equal_weight(x: np.ndarray, y: np.ndarray) -> float:
     y = np.asarray(y, dtype=float).ravel()
     x = x - x.mean()
     y = y - y.mean()
-    den = (np.linalg.norm(x) * np.linalg.norm(y))
+    den = np.linalg.norm(x) * np.linalg.norm(y)
     if den == 0.0:
         return 0.0
     return float(np.dot(x, y) / den)
 
 
 def _corr_ewma(x: np.ndarray, y: np.ndarray, lam: float) -> float:
+    """EWMA Pearson correlation with decay lambda (close to 1 => slower decay)."""
     x = np.asarray(x, dtype=float).ravel()
     y = np.asarray(y, dtype=float).ravel()
     n = min(len(x), len(y))
@@ -42,15 +47,12 @@ def _corr_ewma(x: np.ndarray, y: np.ndarray, lam: float) -> float:
     x = x[-n:]
     y = y[-n:]
 
-    mx = 0.0
-    my = 0.0
+    mx = x[0]
+    my = y[0]
     cxx = 0.0
     cyy = 0.0
     cxy = 0.0
     alpha = 1.0 - lam
-
-    mx = x[0]
-    my = y[0]
 
     for i in range(1, n):
         xi = x[i]
@@ -72,9 +74,9 @@ def _corr_ewma(x: np.ndarray, y: np.ndarray, lam: float) -> float:
 
 def pw_corr(x: np.ndarray, y: np.ndarray, spec: Any) -> float:
     """
-    Berechnet Korrelation (Pearson).
-    Entweder Expanding (Equal Weight) oder EWMA.
-    Window-Parameter wurde entfernt.
+    Pearson correlation using either:
+    - expanding (equal weight), or
+    - EWMA (mode='ewma'/'ewm', lambda/lam in spec)
     """
     x = np.asarray(x, dtype=float).ravel()
     y = np.asarray(y, dtype=float).ravel()
@@ -83,44 +85,33 @@ def pw_corr(x: np.ndarray, y: np.ndarray, spec: Any) -> float:
         return 0.0
 
     mode = _spec_get(spec, "mode", "expanding")
-    if mode == "ewma" or mode == "ewm":
+    if mode in ("ewma", "ewm"):
         lam_key1 = _spec_get(spec, "lam")
         lam_key2 = _spec_get(spec, "lambda", 0.98)
         lam = float(lam_key1 if lam_key1 is not None else lam_key2)
         lam = max(1e-6, min(1.0 - 1e-6, lam))
-
         return _corr_ewma(x, y, lam)
 
     return _corr_equal_weight(x, y)
 
 
 # --------------------------------------------------------------------------------------
-# select_lags_per_feature (VEREINFACHT: Keine Selection mehr, nur Mapping)
+# Lag mapping (simplified)
 # --------------------------------------------------------------------------------------
 
-def select_lags_per_feature(
-        X: pd.DataFrame,
-        L: Tuple[int, ...]
-) -> Dict[str, List[int]]:
-    """
-    Weist jedem Feature in X einfach alle Lags aus L zu.
-    Keine komplexe Korrelationsberechnung oder Top-K Auswahl mehr.
-    """
+def select_lags_per_feature(X: pd.DataFrame, L: Tuple[int, ...]) -> Dict[str, List[int]]:
+    """Assign all lags in L to every feature column in X."""
     all_lags = sorted(list(L))
-    lag_map: Dict[str, List[int]] = {}
-
-    for col in X.columns:
-        lag_map[col] = all_lags
-
-    return lag_map
+    return {col: all_lags for col in X.columns}
 
 
 # --------------------------------------------------------------------------------------
-# Feature Matrix Build
+# Feature matrix
 # --------------------------------------------------------------------------------------
 
 def build_engineered_matrix(X: pd.DataFrame, lag_map: Dict[str, List[int]]) -> pd.DataFrame:
-    out = {}
+    """Build a lagged feature matrix based on lag_map."""
+    out: Dict[str, pd.Series] = {}
     for col, lags in lag_map.items():
         s = X[col]
         for lag in lags:
@@ -133,17 +124,15 @@ def build_engineered_matrix(X: pd.DataFrame, lag_map: Dict[str, List[int]]) -> p
 # --------------------------------------------------------------------------------------
 
 def screen_k1(
-        X_eng: pd.DataFrame,
-        y: pd.Series,
-        I_t: int,
-        corr_spec: Any,
-        taus: np.ndarray,
-        k1_topk: Optional[int] = 200,
-        threshold: Optional[float] = None,
+    X_eng: pd.DataFrame,
+    y: pd.Series,
+    I_t: int,
+    corr_spec: Any,
+    taus: np.ndarray,
+    k1_topk: Optional[int] = 200,
+    threshold: Optional[float] = None,
 ) -> Tuple[List[str], Dict[str, float]]:
-    """
-    Berechnet Korrelation direkt auf Rohdaten (x_eff, y_eff) und filtert die Top-K Features.
-    """
+    """Score features by abs corr with y(t+1) and keep top-k (or threshold)."""
     if len(taus) == 0 or X_eng.shape[1] == 0:
         return [], {}
 
@@ -153,17 +142,13 @@ def screen_k1(
     scores: Dict[str, float] = {}
     for col in X_eng.columns:
         xvals = X_eng[col].iloc[taus].to_numpy(dtype=float)
-        x_mask_col = ~np.isnan(xvals)
-        mask = y_mask_base & x_mask_col
+        mask = y_mask_base & (~np.isnan(xvals))
 
         if np.sum(mask) < 2:
             scores[col] = 0.0
             continue
 
-        y_eff = y_next[mask]
-        x_eff = xvals[mask]
-
-        scores[col] = abs(pw_corr(x_eff, y_eff, corr_spec))
+        scores[col] = abs(pw_corr(xvals[mask], y_next[mask], corr_spec))
 
     cols = list(X_eng.columns)
     if threshold is not None:
@@ -171,6 +156,7 @@ def screen_k1(
     else:
         k = int(k1_topk or 0)
         keep = [] if k <= 0 else [c for c, _ in sorted(scores.items(), key=lambda z: z[1], reverse=True)[:k]]
+
     return keep, scores
 
 
@@ -179,15 +165,13 @@ def screen_k1(
 # --------------------------------------------------------------------------------------
 
 def redundancy_reduce_greedy(
-        X_sel: pd.DataFrame,
-        corr_spec: Any,
-        taus: np.ndarray,
-        redundancy_param: float = 0.90,
-        scores: Optional[Dict[str, float]] = None,
+    X_sel: pd.DataFrame,
+    corr_spec: Any,
+    taus: np.ndarray,
+    redundancy_param: float = 0.90,
+    scores: Optional[Dict[str, float]] = None,
 ) -> List[str]:
-    """
-    Greedy Redundanzreduktion basierend auf paarweiser Korrelation.
-    """
+    """Greedy redundancy pruning using pairwise correlation."""
     if X_sel.shape[1] <= 1:
         return list(X_sel.columns)
 
@@ -197,37 +181,33 @@ def redundancy_reduce_greedy(
     else:
         order.sort()
 
-    X_raw: Dict[str, np.ndarray] = {}
-    for c in order:
-        X_raw[c] = X_sel[c].iloc[taus].to_numpy(dtype=float)
+    X_raw: Dict[str, np.ndarray] = {c: X_sel[c].iloc[taus].to_numpy(dtype=float) for c in order}
 
     kept: List[str] = []
     for c in order:
-        ok = True
         xvals_c = X_raw[c]
+        ok = True
 
         for kcol in kept:
             xvals_k = X_raw[kcol]
             mask = (~np.isnan(xvals_c)) & (~np.isnan(xvals_k))
-
             if np.sum(mask) < 2:
                 continue
 
-            x_c_masked = xvals_c[mask]
-            x_k_masked = xvals_k[mask]
-
-            if abs(pw_corr(x_c_masked, x_k_masked, corr_spec)) > float(redundancy_param):
+            if abs(pw_corr(xvals_c[mask], xvals_k[mask], corr_spec)) > float(redundancy_param):
                 ok = False
                 break
 
         if ok:
             kept.append(c)
+
     return kept
 
 
 # --------------------------------------------------------------------------------------
-# DR (Unverändert)
+# Dimensionality reduction
 # --------------------------------------------------------------------------------------
+
 @dataclass
 class _DRMap:
     method: str
@@ -240,6 +220,7 @@ class _DRMap:
 
 
 def _fit_standardizer(X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    """Fit a per-column standardizer (ignoring NaNs)."""
     mu = np.nanmean(X.to_numpy(dtype=float), axis=0)
     sd = np.nanstd(X.to_numpy(dtype=float), axis=0)
     sd = np.where(sd <= 0, 1.0, sd)
@@ -247,16 +228,18 @@ def _fit_standardizer(X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _apply_standardizer(X: pd.DataFrame, mu: np.ndarray, sd: np.ndarray) -> np.ndarray:
+    """Apply standardization using precomputed mean/std."""
     return (X.to_numpy(dtype=float) - mu.reshape(1, -1)) / sd.reshape(1, -1)
 
 
 def fit_dr(
-        X_tr: pd.DataFrame,
-        method: str = "none",
-        pca_var_target: float = 0.95,
-        pca_kmax: int = 50,
-        pls_components: int = 4,
+    X_tr: pd.DataFrame,
+    method: str = "none",
+    pca_var_target: float = 0.95,
+    pca_kmax: int = 50,
+    pls_components: int = 4,
 ) -> _DRMap:
+    """Fit a DR mapping (none/pca/pls) based on training data."""
     cols = list(X_tr.columns)
     n_samples, n_features = X_tr.shape
 
@@ -270,6 +253,7 @@ def fit_dr(
 
     if method == "pca":
         from sklearn.decomposition import PCA
+
         Z = _apply_standardizer(X_tr, mu, sd)
         Z = np.nan_to_num(Z, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -287,6 +271,7 @@ def fit_dr(
 
     if method == "pls":
         from sklearn.cross_decomposition import PLSRegression
+
         Z = _apply_standardizer(X_tr, mu, sd)
         Z = np.nan_to_num(Z, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -304,17 +289,18 @@ def fit_dr(
 
 
 def transform_dr(
-        m: _DRMap,
-        X: pd.DataFrame,
-        y: Optional[pd.Series] = None,
-        fit_pls: bool = False
+    m: _DRMap,
+    X: pd.DataFrame,
+    y: Optional[pd.Series] = None,
+    fit_pls: bool = False,
 ) -> np.ndarray:
+    """Transform X using a fitted DR map."""
     if m.method == "none":
         Xc = X.loc[:, m.cols_] if m.cols_ else X
         return np.nan_to_num(Xc.to_numpy(dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
 
-    if (m.scaler_mean is None or m.scaler_std is None):
-        raise ValueError("DR map (PCA/PLS) ist nicht korrekt initialisiert (scaler fehlt).")
+    if m.scaler_mean is None or m.scaler_std is None:
+        raise ValueError("DR map (PCA/PLS) is not initialized correctly (missing scaler).")
 
     Xc = X.loc[:, m.cols_]
     Z = _apply_standardizer(Xc, m.scaler_mean, m.scaler_std)
@@ -322,12 +308,11 @@ def transform_dr(
 
     if m.method == "pca":
         V = m.pca_components_
-        if V is None:
-            return Z
-        return (Z @ V.T).astype(float, copy=False)
+        return Z if V is None else (Z @ V.T).astype(float, copy=False)
 
     if m.method == "pls":
         from sklearn.cross_decomposition import PLSRegression
+
         pls: PLSRegression = m.pls_model
         if fit_pls:
             if y is None:
@@ -335,7 +320,6 @@ def transform_dr(
             yv = y.to_numpy(dtype=float).reshape(-1, 1)
             yv = yv - yv.mean()
             pls.fit(Z, yv)
-        T_scores = pls.transform(Z)
-        return T_scores.astype(float, copy=False)
+        return pls.transform(Z).astype(float, copy=False)
 
     return Z

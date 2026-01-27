@@ -1,4 +1,3 @@
-# src/models/GPR.py
 from __future__ import annotations
 from typing import Any, Dict, Optional, List
 import numpy as np
@@ -10,18 +9,7 @@ from sklearn.gaussian_process.kernels import RBF, Matern, ConstantKernel as C
 
 class ForecastModel:
     """
-    GaussianProcessRegressor-Wrapper im ET/EN/LGBM-Stil:
-    - .fit(X, y, sample_weight=None)
-    - .predict(X)
-    - .predict_one(x_row)
-    - .get_feature_importances()  (Pseudo-Importances via ARD-Längenskalen)
-
-    Wichtige Punkte:
-      * Dieses Modell führt intern eine train-only Z-Standardisierung von X durch
-        (Mittelwert/Std aus dem Trainingsset), BEVOR der GPR gefittet wird.
-      * NaN/Inf werden auf 0.0 gesetzt.
-      * Feature-"Importances": bei ARD-RBF/Matern: 1 / length_scale^2 (normalisiert)
-        bezogen auf den STANDARDISIERTEN Feature-Space.
+    GaussianProcessRegressor wrapper
     """
 
     def __init__(self, params: Optional[Dict[str, Any]] = None):
@@ -33,17 +21,17 @@ class ForecastModel:
         self._ard: bool = bool(self.params.get("ard", True))
         self._kernel_type: str = str(self.params.get("kernel", "rbf")).lower()
         self._length_scale_init: float = float(self.params.get("length_scale_init", 1.0))
-        self._nu: float = float(self.params.get("nu", 1.5))  # nur für Matern
+        self._nu: float = float(self.params.get("nu", 1.5))  # for Matern only
         self._noise_alpha_base: float = float(self.params.get("noise_alpha", 1e-6))
         self._normalize_y: bool = bool(self.params.get("normalize_y", True))
         self._n_restarts_optimizer: int = int(self.params.get("n_restarts_optimizer", 2))
         self._optimizer: Optional[str] = self.params.get("optimizer", "fmin_l_bfgs_b")
         self._seed: Optional[int] = int(self.params.get("seed", 42))
 
-        # Wird nach dem Fit gefüllt (falls ARD):
+        # Filled after fit (if ARD)
         self._last_length_scales_: Optional[np.ndarray] = None
 
-        # Skalierungsparameter (train-only Z-Standardisierung)
+        # Scaling params (train-only z-standardization)
         self._mu_: Optional[np.ndarray] = None
         self._sigma_: Optional[np.ndarray] = None
 
@@ -52,19 +40,18 @@ class ForecastModel:
 
     @staticmethod
     def _clean(X: np.ndarray) -> np.ndarray:
+        """Convert to float array and replace NaN/inf with 0."""
         X = np.asarray(X, dtype=float)
         return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
 
     def _standardize_fit(self, X: np.ndarray) -> np.ndarray:
-        """
-        Fit Z-Standardisierung auf X (Train) und wende sie an.
-        """
+        """Fit z-standardization on X (train) and apply it."""
         X = self._clean(X)
         mu = X.mean(axis=0)
         sigma = X.std(axis=0, ddof=0)
 
         sigma_safe = sigma.copy()
-        sigma_safe[sigma_safe == 0.0] = 1.0  # konstante Features
+        sigma_safe[sigma_safe == 0.0] = 1.0  # constant features
 
         self._mu_ = mu
         self._sigma_ = sigma_safe
@@ -72,9 +59,7 @@ class ForecastModel:
         return (X - mu) / sigma_safe
 
     def _standardize_apply(self, X: np.ndarray) -> np.ndarray:
-        """
-        Wende gespeicherte Z-Standardisierung auf neue Daten an.
-        """
+        """Apply stored z-standardization to new data."""
         if self._mu_ is None or self._sigma_ is None:
             raise RuntimeError("Scaler parameters not fitted. Call fit() first.")
         X = self._clean(X)
@@ -88,7 +73,7 @@ class ForecastModel:
         return (X - self._mu_) / self._sigma_
 
     def _build_kernel(self, n_features: int):
-        # ARD: length_scale ist Vektor der Länge p; sonst Skalar
+        # ARD: length_scale is a vector of size p; otherwise a scalar
         if self._ard:
             ls = np.full(n_features, float(self._length_scale_init), dtype=float)
         else:
@@ -101,7 +86,7 @@ class ForecastModel:
         else:
             raise ValueError("kernel must be 'rbf' or 'matern'")
 
-        # Konstante * Base; Rauschanteil rein über alpha (hetero) statt WhiteKernel
+        # Constant * base; noise is handled via alpha (heteroskedastic) instead of WhiteKernel
         return C(1.0, (1e-3, 1e3)) * base
 
     def _make_reg(self, n_features: int, alpha_vec: Optional[np.ndarray] = None) -> GaussianProcessRegressor:
@@ -117,7 +102,7 @@ class ForecastModel:
         return reg
 
     def fit(self, X, y, sample_weight: Optional[np.ndarray] = None):
-        # Feature-Namen organisieren
+        # Capture feature names when available
         if isinstance(X, pd.DataFrame):
             self._feature_names = X.columns.tolist()
             X_np = X.values
@@ -131,10 +116,10 @@ class ForecastModel:
         y_np = np.asarray(y, dtype=float).ravel()
         n, p = X_np.shape
 
-        # Train-only Z-Standardisierung
+        # Train-only z-standardization
         X_std = self._standardize_fit(X_np)
 
-        # Heteroskedastische alpha via sample_weight
+        # Heteroskedastic alpha via sample_weight
         alpha_vec = None
         if sample_weight is not None:
             w = np.asarray(sample_weight, dtype=float).ravel()
@@ -143,24 +128,24 @@ class ForecastModel:
             eps = 1e-12
             alpha_vec = self._noise_alpha_base / np.clip(w, eps, 1.0)
 
-        # Reg mit passendem alpha erzeugen und fitten
+        # Build regressor with the selected alpha and fit
         self._reg = self._make_reg(p, alpha_vec=alpha_vec)
         self._reg.fit(X_std, y_np)
 
-        # Längenskalen (für ARD) extrahieren -> Pseudo-Importances
+        # Extract length-scales (ARD) for pseudo importances
         self._last_length_scales_ = self._extract_length_scales(self._reg)
 
         return self
 
     @staticmethod
     def _extract_length_scales(reg: GaussianProcessRegressor) -> Optional[np.ndarray]:
-        # Erwartet: Kernel ~ Constant * (RBF|Matern)
+        """Extract length_scales from a kernel shaped like Constant * (RBF|Matern)."""
         try:
             k = reg.kernel_
-            # Bei C(1.0) * Base sind die Faktoren in .k1 (Constant) und .k2 (Base)
+            # For C(1.0) * Base, factors are in .k1 (Constant) and .k2 (Base)
             base = getattr(k, "k2", None)
             if base is None:
-                base = k  # falls kein Produkt
+                base = k  # non-product kernel
             if hasattr(base, "length_scale"):
                 ls = np.asarray(base.length_scale, dtype=float)
                 return ls.copy()
@@ -184,13 +169,13 @@ class ForecastModel:
         return float(self.predict(x)[0])
 
     def get_feature_importances(self) -> Dict[str, float]:
-        # Pseudo-Importances aus ARD-Längenskalen: 1 / ls^2 (normalisiert)
+        # Pseudo importances from ARD length-scales: 1 / ls^2 (normalized)
         ls = self._last_length_scales_
         if ls is None:
             return {}
         ls = np.asarray(ls, dtype=float)
         if ls.ndim == 0:
-            # kein ARD (Skalar) -> nicht sinnvoll aufteilen
+            # No ARD (scalar) -> not meaningful to split per feature
             return {}
 
         imp = 1.0 / (ls ** 2 + 1e-12)

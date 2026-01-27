@@ -1,25 +1,17 @@
-# src/models/ensemble.py
 from __future__ import annotations
 
 """
-Ensemble utilities for combining Level-0 nowcasts from heterogeneous models.
-
-This module is fully leakage-safe: all weights are estimated using *out-of-sample*
-prequential predictions from the base models only.
-
-UPDATED LOGIC:
-- Supports loading Stage A predictions for calibration.
-- Supports loading Stage B predictions for testing.
+Ensemble utilities for combining Level-0 nowcasts from heterogeneous models
 """
 
 from dataclasses import dataclass
-from typing import Sequence, List, Dict, Tuple
+from typing import Sequence, List, Dict
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
-# Absolute Importe, damit es aus Notebooks und Skripten funktioniert
+# Absolute imports so this works from notebooks and scripts
 from src.config import outputs_for_model
 from src.evaluation import rmse
 
@@ -30,20 +22,7 @@ from src.evaluation import rmse
 
 @dataclass
 class Level0Pool:
-    """Container for aligned Level-0 OOS predictions.
-
-    Attributes
-    ----------
-    dates : pd.DatetimeIndex
-        OOS dates (t+1 in thesis notation).
-    y_true : pd.Series
-        Realized targets y_{t+1} aligned with `dates`.
-    F : pd.DataFrame
-        Matrix of base-model forecasts with shape (T_oos, M),
-        columns labelled by `model_names`.
-    model_names : List[str]
-        Names of the base models.
-    """
+    """Aligned Level-0 OOS predictions."""
     dates: pd.DatetimeIndex
     y_true: pd.Series
     F: pd.DataFrame
@@ -51,10 +30,7 @@ class Level0Pool:
 
 
 def _load_active_stageB_predictions(model_name: str) -> pd.DataFrame:
-    """
-    Load OOS predictions from Stage B for a given model, keeping only the
-    *active* configuration chosen by the internal online policy.
-    """
+    """Load Stage B OOS predictions for a model, keeping only the active configuration."""
     outs = outputs_for_model(model_name)
     preds_path = outs["stageB"] / "monthly" / "preds.csv"
     if not preds_path.exists():
@@ -68,12 +44,10 @@ def _load_active_stageB_predictions(model_name: str) -> pd.DataFrame:
     if "is_active" in df.columns:
         df = df[df["is_active"] == True].copy()
 
-    # Parse date and set index
     df["date_t_plus_1"] = pd.to_datetime(df["date_t_plus_1"])
-    df = df.sort_values("date_t_plus_1")
-    df = df.set_index("date_t_plus_1")
+    df = df.sort_values("date_t_plus_1").set_index("date_t_plus_1")
 
-    # Basic sanity check
+    # Drop duplicates (keep last)
     if df.index.duplicated().any():
         df = df[~df.index.duplicated(keep="last")]
 
@@ -81,77 +55,68 @@ def _load_active_stageB_predictions(model_name: str) -> pd.DataFrame:
 
 
 def _load_stageA_champion_predictions(model_name: str) -> pd.DataFrame:
-    """
-    Lädt die Vorhersagen des 'Gewinners' aus Stage A (Block 3).
-    Dient als Kalibrierungsdaten für das Ensemble.
-    """
+    """Load Stage A 'champion' predictions (best RMSE in block3) for calibration."""
     outs = outputs_for_model(model_name)
     out_dir = outs["stageA"]
 
-    # 1. Summary laden, um den Champion zu finden (kleinster RMSE in Block 3)
-    # Block 3 ist der letzte vor Stage B
+    # Find champion config from block3 summary
     block3_dir = out_dir / "block3"
     summary_path = block3_dir / "rmse.csv"
 
     if not summary_path.exists():
-        # Fallback: Versuche summary.csv im Hauptordner
+        # Fallback: try summary.csv in the main output folder
         summary_path = out_dir / "summary" / "summary.csv"
 
     if not summary_path.exists():
-        print(f"WARNUNG: Keine Stage A Daten für {model_name} gefunden. Kalibrierung fehlt.")
+        print(f"WARNING: No Stage A data found for {model_name}. Calibration data is missing.")
         return pd.DataFrame()
 
     df_sum = pd.read_csv(summary_path)
 
-    # Check column names (manchmal heißt es 'rmse', manchmal 'rmse_val')
+    # Column name may vary
     rmse_col = "rmse" if "rmse" in df_sum.columns else "rmse_val"
 
-    # Sortieren nach RMSE aufsteigend -> Beste Config
     best_cfg_row = df_sum.sort_values(rmse_col).iloc[0]
     best_cfg_id = best_cfg_row["config_id"]
 
-    # 2. Predictions für diese Config laden
+    # Load predictions for that config
     preds_path = block3_dir / "preds.csv"
     if not preds_path.exists():
         return pd.DataFrame()
 
     df_preds = pd.read_csv(preds_path)
-    # Datum parsen
     df_preds["date_t_plus_1"] = pd.to_datetime(df_preds["date_t_plus_1"])
 
-    # Filtern auf den Champion
     champ_preds = df_preds[df_preds["config_id"] == best_cfg_id].copy()
     champ_preds = champ_preds.sort_values("date_t_plus_1").set_index("date_t_plus_1")
 
-    # Falls Duplikate durch Re-Runs entstanden sind
+    # Drop duplicates (keep last), e.g. after re-runs
     if champ_preds.index.duplicated().any():
         champ_preds = champ_preds[~champ_preds.index.duplicated(keep="last")]
 
-    # Nur benötigte Spalten
     return champ_preds[["y_true", "y_pred"]].rename(columns={"y_pred": model_name})
 
 
 def load_level0_pool(model_names: Sequence[str]) -> Level0Pool:
     """Load Stage B predictions."""
     model_names = list(model_names)
-    dfs = {}
+    dfs: Dict[str, pd.DataFrame] = {}
     for name in model_names:
         dfs[name] = _load_active_stageB_predictions(name)
-
     return _align_and_build_pool(dfs, model_names)
 
 
 def load_calibration_pool(model_names: Sequence[str]) -> Level0Pool:
     """Load Stage A predictions (for calibration)."""
     model_names = list(model_names)
-    dfs = {}
+    dfs: Dict[str, pd.DataFrame] = {}
     for name in model_names:
         df = _load_stageA_champion_predictions(name)
         if not df.empty:
             dfs[name] = df
 
     if not dfs:
-        raise ValueError("Konnte keine Stage A Daten laden.")
+        raise ValueError("Could not load any Stage A calibration data.")
 
     return _align_and_build_pool(dfs, model_names)
 
@@ -167,8 +132,7 @@ def _align_and_build_pool(dfs: Dict[str, pd.DataFrame], model_names: List[str]) 
 
     common_idx = common_idx.sort_values()
 
-    # Build y_true
-    # Wir nehmen y_true vom ersten Modell, prüfen aber Konsistenz
+    # Take y_true from the first model (assumed consistent across models)
     first_name = list(dfs.keys())[0]
     y_true = dfs[first_name].loc[common_idx, "y_true"]
     y_true.name = "y_true"
@@ -179,7 +143,7 @@ def _align_and_build_pool(dfs: Dict[str, pd.DataFrame], model_names: List[str]) 
         if name in dfs:
             F[name] = dfs[name].loc[common_idx, name].astype(float)
         else:
-            # Fallback falls ein Modell in Calibration fehlt (sollte nicht passieren)
+            # Should not happen (kept for robustness)
             F[name] = np.nan
 
     return Level0Pool(dates=common_idx, y_true=y_true, F=F, model_names=model_names)
@@ -224,12 +188,13 @@ class StackingResult:
 
 
 def fit_stacking_ensemble(
-        y: pd.Series,
-        F: pd.DataFrame,
-        cal_dates: Sequence[pd.Timestamp],
-        lambdas: Sequence[float],
+    y: pd.Series,
+    F: pd.DataFrame,
+    cal_dates: Sequence[pd.Timestamp],
+    lambdas: Sequence[float],
 ) -> StackingResult:
-    if len(F.columns) == 0: raise ValueError("F empty")
+    if len(F.columns) == 0:
+        raise ValueError("F empty")
 
     cal_idx = pd.Index(cal_dates).intersection(F.index).sort_values()
     if len(cal_idx) == 0:
@@ -240,7 +205,6 @@ def fit_stacking_ensemble(
     T, M = F_cal.shape
     w_equal = np.full(M, 1.0 / M)
 
-    # Optimization
     bounds = [(0.0, None)] * M
     cons = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
 
@@ -272,7 +236,6 @@ def fit_stacking_ensemble(
     else:
         w_final, lam_final = best_res
 
-    # Predict full
     y_pred_all = pd.Series(F.values @ w_final, index=F.index, name="stacked")
     w_series = pd.Series(w_final, index=F.columns, name="weights")
 
@@ -289,7 +252,6 @@ class EWAResult:
 
 
 def _run_ewa_single(y, F, eta, delta=1.0):
-    # Core logic stripped for brevity, assumes aligned numpy arrays or consistent pandas
     dates = F.index.intersection(y.index).sort_values()
     y_v = y.loc[dates].values
     F_v = F.loc[dates].values
@@ -299,29 +261,24 @@ def _run_ewa_single(y, F, eta, delta=1.0):
     weights_out = []
     preds_out = []
 
-    # Rolling variance stats
+    # Online variance stats (Welford)
     n_seen = 0
     mean_y = 0.0
     m2_y = 0.0
 
     for t in range(T):
-        # Weights
         exps = -eta * L
         exps -= exps.max()
         w = np.exp(exps)
         w /= w.sum()
-
         weights_out.append(w)
 
-        # Predict
         f_t = F_v[t]
         y_hat = np.dot(w, f_t)
         preds_out.append(y_hat)
 
-        # Observe y
         y_t = y_v[t]
 
-        # Update variance scale
         n_seen += 1
         delta_val = y_t - mean_y
         mean_y += delta_val / n_seen
@@ -333,12 +290,14 @@ def _run_ewa_single(y, F, eta, delta=1.0):
         else:
             s2 = max(m2_y / (n_seen - 1), 1e-6)
 
-        # Loss update
         loss_t = (y_t - f_t) ** 2 / s2
         loss_t = np.clip(loss_t, 0, 1)
         L = delta * L + loss_t
 
-    return pd.Series(preds_out, index=dates, name="ewa"), pd.DataFrame(weights_out, index=dates, columns=F.columns)
+    return (
+        pd.Series(preds_out, index=dates, name="ewa"),
+        pd.DataFrame(weights_out, index=dates, columns=F.columns),
+    )
 
 
 def fit_ewa_ensemble(y, F, cal_dates, etas, delta=0.95):
@@ -347,7 +306,7 @@ def fit_ewa_ensemble(y, F, cal_dates, etas, delta=0.95):
     best_eta = etas[0]
     best_rmse = np.inf
 
-    # Tune on Cal
+    # Tune on calibration window
     for eta in etas:
         y_hat, _ = _run_ewa_single(y.loc[cal_idx], F.loc[cal_idx], eta, delta)
         r = rmse(y.loc[cal_idx].values, y_hat.values)
@@ -355,7 +314,5 @@ def fit_ewa_ensemble(y, F, cal_dates, etas, delta=0.95):
             best_rmse = r
             best_eta = eta
 
-    # Run full
     y_full, W_full = _run_ewa_single(y, F, best_eta, delta)
-
     return EWAResult(best_eta, delta, best_rmse, y_full, W_full)

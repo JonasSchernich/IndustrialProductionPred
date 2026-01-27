@@ -6,11 +6,11 @@ import numpy as np
 
 class ForecastModel:
     """
-    Implementiert Baseline-Modelle (RW, Mean), die die X-Features ignorieren.
+    Baseline models (RW, Mean) that ignore X features.
     - .fit(X, y, sample_weight=None)
     - .predict_one(x_row)
-    - HPs:
-        - "model_type": "RW" oder "Mean"
+    - Hyperparameters:
+        - "model_type": "RW" or "Mean"
     """
 
     def __init__(self, params: Optional[Dict[str, Any]] = None):
@@ -24,35 +24,34 @@ class ForecastModel:
 
     def fit(self, X, y, sample_weight=None):
         """
-        Passt das Modell an. X wird ignoriert.
-        y ist y_tr aus der Pipeline (d.h. y.shift(-1).iloc[taus_model]).
+        Fit the model. X is ignored.
+        y is the training target vector from the pipeline (e.g., y.shift(-1).iloc[taus_model]).
         """
         if self.model_type == "Mean":
-            # Berechnet den Expanding Grand Mean
-            # y ist hier der Vektor der Zielvariablen im Trainingsfenster
+            # Compute (weighted) mean over the training window
             if sample_weight is not None:
                 self._mean_pred = np.average(y, weights=sample_weight)
             else:
                 self._mean_pred = np.mean(y)
 
         elif self.model_type == "RW":
-            # RW (Prognose 0) erfordert kein Training
+            # RW baseline (predict 0) requires no training
             pass
 
         else:
-            raise ValueError(f"Unbekannter model_type in Baselines: {self.model_type}")
+            raise ValueError(f"Unknown model_type in Baselines: {self.model_type}")
 
         return self
 
     def predict(self, X):
-        """Erstellt Prognosen für einen Batch."""
+        """Create predictions for a batch."""
         if self.model_type == "Mean":
             return np.full(len(X), self._mean_pred)
         elif self.model_type == "RW":
             return np.zeros(len(X))
 
     def predict_one(self, x_row):
-        """Erstellt eine einzelne Prognose."""
+        """Create a single prediction."""
         if self.model_type == "Mean":
             return self._mean_pred
         elif self.model_type == "RW":
