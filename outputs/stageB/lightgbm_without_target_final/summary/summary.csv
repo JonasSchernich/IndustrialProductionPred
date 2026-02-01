@@ -1,6 +1,0 @@
-config_id,rmse_overall,model
-1,2.485733649903427,lightgbm_without_target_final
-2,2.4694318385828193,lightgbm_without_target_final
-3,2.485733649903427,lightgbm_without_target_final
-4,2.4694318385828193,lightgbm_without_target_final
-5,2.435898044357187,lightgbm_without_target_final
