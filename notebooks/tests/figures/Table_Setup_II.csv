@@ -1,0 +1,9 @@
+Model,RMSE_Ratio,p_value,Status
+LightGBM,0.7330,0.0004145,better
+Ensemble,0.7507,0.0003414,better
+Elastic Net,0.8857,0.02031,better
+Extra Trees,0.9211,0.2734,neutral
+TabPFN,0.9327,0.2444,neutral
+SFM,0.9617,0.7796,neutral
+GPR,1.0295,0.7312,neutral
+SVR,1.0668,0.00482,worse
