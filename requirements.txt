@@ -30,3 +30,4 @@ openpyxl>=3.1.0
 # Notebook Execution (Optional, aber empfohlen für die .ipynb Files)
 ipykernel>=6.0.0
 tqdm>=4.65.0
+arch
