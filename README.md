@@ -54,7 +54,7 @@ python -m src.data.load_data
 Run `notebooks/descriptive_analysis/analysis.ipynb` to generate initial plots and sanity checks.
 
 ### B) Generate Target-Based Features (Setup II)
-Run any of the notebooks in `notebooks/target_based/` to create additional feature blocks (e.g., `AR.parquet`, `chronos_*.parquet`) in `data/processed/`. These can be appended to ifo features during modeling.
+Run any of the notebooks in `notebooks/target_based/` to create additional feature blocks (e.g., `AR.parquet`, `chronos_*.parquet`) in `data/processed/`. These can be appended to ifo features during modeling. Notebooks for Chronos and tsfresh build to be run in google colab to leverage GPU.
 
 ### C) Dynamic Feature Importance (Setup III)
 Run `notebooks/feature_importance/feature_importance.ipynb`.
@@ -69,6 +69,7 @@ Execute notebooks in `notebooks/modeling/` (e.g., `EN.ipynb`, `LGBM.ipynb`, `ens
 - **Stage A:** Block holdout tuning to prune configurations.
 - **Stage B:** Monthly rolling evaluation with online model selection.
 - **Dynamic FI Switch:** Set `USE_DYNAMIC_FI_PIPELINE = True` in notebooks to utilize artifacts from step (C).
+- **Grids:** Flexible choice of all tuning parameters.
 
 ### F) Results & Visualization
 Run `notebooks/tests/evaluations.ipynb` to aggregate results from `outputs/` and generate final comparison figures.
