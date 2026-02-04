@@ -2,20 +2,27 @@
 
 Code repository for the master thesis **“A Systematic Comparison of Machine Learning Methods for Macroeconomic Nowcasting with High-Dimensional Sentiment Data: Evidence from German Industrial Production”**.
 
-**Goal:** Nowcast the monthly change in German industrial production ($\Delta$IP) using high-dimensional ifo business survey (“soft”) indicators ($p \gg T$), optionally augmented with target-history feature blocks.
+**Goal:** Nowcast the monthly change in German industrial production using high-dimensional ifo Business Survey  indicators ($p \gg T$), optionally augmented with target-history feature blocks.
+The following three research questions are adressed:
 
+1. Which ML and DL methods deliver the most accurate nowcasts of monthly changes in IP?
+2. How do these methods perform relative to simple benchmarks commonly used in the now-
+casting literature?
+Economic:
+3. Which ifo Business Survey-based features drive the predictions and are these drivers stable
+over time?
 ---
 
 ## 📂 Repository Structure
 
 - `data/`
-  - `raw/` – Raw input data (not versioned).
+  - `raw/` – Raw input data.
   - `processed/` – Generated, model-ready datasets (CSV/Parquet).
 - `notebooks/`
   - `descriptive_analysis/` – Exploratory analysis (`analysis.ipynb` + figures).
   - `feature_importance/` – Dynamic feature selection pipeline (`feature_importance.ipynb`).
   - `target_based/` – Feature generation based on target history (`AR.ipynb`, `chronos.ipynb`, `tsfresh_slim.ipynb`).
-  - `modeling/` – Core modeling notebooks (EN, SVR, GPR, ET, LGBM, TabPFN, SFM, Ensemble, Forward Selection).
+  - `modeling/` – Core modeling notebooks (EN, SVR, GPR, ET, LGBM, TabPFN, SFM, Ensemble).
   - `tests/` – Final evaluation and result visualization (`evaluations.ipynb` + figures).
   - `baselines.ipynb` – Benchmark models (Random Walk, AR, etc.).
 - `src/` – Core Python package (data loading, feature engineering, tuning, model wrappers).
@@ -40,7 +47,7 @@ python -m src.data.load_data
 *This generates `target.csv`, `features.csv`, and cleaned datasets in `data/processed/`.*
 
 ---
-
+-> All files are already included/pregenerated in this repository
 ## 🛠️ Typical Workflow
 
 ### A) Descriptive Analysis (Optional)
